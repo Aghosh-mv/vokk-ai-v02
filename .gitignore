@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+secrets.env
+.vokk/
+*.png
+*.json
