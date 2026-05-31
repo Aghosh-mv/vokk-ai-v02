@@ -33,8 +33,10 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-# The .vokk creative-language interpreter — images & music are PROGRAMMED, not prompted.
+# VokkScript builds VOKK's mind (cortex.vokk).
 from vokk_lang import run_vokk, extract_blocks, parse_cortex
+# VokkImageMusicScript — VOKK's dedicated language for images & music (soft, painterly).
+from vokk_imagemusic import run_imagemusic
 # The procedural raster engine — VokkScript `scene {}` -> real atmospheric PNG pixels.
 from vokk_raster import run_scenes
 
@@ -196,8 +198,9 @@ class BrainType(Enum):
     SWIFT = "swift"
     SCOUT = "scout"
     PULSE = "pulse"
-    CANVAS = "canvas"      # writes VokkScript visual -> SVG (crisp vector art)
-    COMPOSER = "composer"  # writes VokkScript music  -> playable score
+    FORGE = "forge"        # the coding mind — many languages + VokkScript family
+    CANVAS = "canvas"      # paints in VokkImageMusicScript -> soft SVG
+    COMPOSER = "composer"  # composes in VokkImageMusicScript -> playable score
     VISTA = "vista"        # writes VokkScript scene  -> procedural raster PNG (photographic)
 
 
@@ -379,67 +382,75 @@ class PulseBrain(Brain):
               "Check claims for accuracy and flag anything uncertain." + EXPRESSIVE)
 
 
+class ForgeBrain(Brain):
+    btype, conf, temp, engine = BrainType.FORGE, 0.93, 0.3, "gemini"
+    system = (IDENTITY +
+        "As VOKK Forge, the coding mind, you write correct, idiomatic, production-quality code. "
+        "You are fluent in Python, JavaScript/TypeScript, Rust, Go, C/C++, Java, C#, Swift, Kotlin, "
+        "Ruby, PHP, SQL, Bash, HTML/CSS — and VOKK's own languages: VokkScript (which defines "
+        "VOKK's minds via agent{} and route{} blocks) and VokkImageMusicScript (image{} and song{} "
+        "blocks for visuals and music). Default to the language the user asks for; if unspecified, "
+        "pick the most fitting one and say why in one line. Always: put runnable code in a fenced "
+        "block with a language tag, keep it complete (no '...'), handle edge cases, and add a short "
+        "explanation only when it helps. Prefer clarity and correctness over cleverness." + EXPRESSIVE)
+
+
 def _strip_fences(s: str) -> str:
     """Pull VokkScript out of an LLM reply that may be wrapped in ``` fences."""
     m = re.search(r"```(?:vokk|vokkscript|visual|music)?\s*(.*?)```", s, re.S)
     return (m.group(1) if m else s).strip()
 
 
-# Few-shot primers so the LLM writes valid VokkScript creative code.
-VISUAL_PRIMER = """You write ONLY VokkScript visual code. No prose, no markdown fences.
-Grammar:
-  visual NAME {
-    canvas W x H
-    background #hex
-    gradient GNAME #hex #hex                 # then use:  fill GNAME  (great for skies, light, depth)
-    circle  cx cy r        fill #hex [stroke #hex sw N] [opacity 0..1]
-    rect    x y w h        fill #hex [rx N]
-    ellipse cx cy rx ry    fill #hex [opacity 0..1]
-    line    x1 y1 x2 y2    stroke #hex sw N
-    polygon x1,y1 x2,y2 .. fill #hex [opacity 0..1]
-    text    x y "string"   fill #hex size N [weight bold] [style italic] [font serif|mono|display] [anchor middle]
+# Few-shot primers for VokkImageMusicScript — VOKK's dedicated image+music language.
+VISUAL_PRIMER = """You write ONLY VokkImageMusicScript image code. No prose, no markdown fences.
+This language renders with SOFT gradients, blur and light layering — output is painterly
+and atmospheric, NEVER flat papercraft. Grammar:
+  image NAME {
+    size W H
+    wash #topHex #bottomHex                       # smooth vertical gradient backdrop (paint first)
+    blob cx cy r #hex [blur B] [opacity O]         # soft radial mass (body, cloud, hill, cheek)
+    glow cx cy r #hex [intensity I]                # luminous bloom / light source
+    light cx cy r #hex                             # small bright highlight
+    stroke x1 y1 x2 y2 #hex width W [blur B]       # soft round-cap painterly stroke
+    field x1,y1 x2,y2 .. #hex [blur B] [opacity O] # soft blurred region (ground, shadow shape)
+    text x y "s" #hex size N [weight bold] [font serif|mono|display]
   }
-0,0 is top-left; y grows downward. ONE visual block.
+0,0 top-left; y grows downward. ONE image block.
+Craft soft, luminous, layered art:
+  - Start with a wash for the light. Build forms from overlapping translucent BLOBS with blur,
+    so edges melt together (this is what kills the papercraft flatness).
+  - Model volume: a darker blob for shadow, a lighter blob offset toward the light for the lit side,
+    then a small bright `light` for the highlight. Pick one light direction.
+  - Use glow for atmosphere/sun/rim light. Use field with blur for soft ground or background masses.
+  - 12-30 layered elements. Harmonious palette, gentle contrast. Keep everything inside the canvas."""
 
-VOKK's SIGNATURE STYLE is a bold PAINTERLY / FACETED look — like a confident digital
-oil painting built from angular brushstroke planes, NOT smooth cartoon shapes:
-  - Build the subject from many overlapping POLYGON facets (30-70+), each a flat plane of color.
-    Think of carving the form into angular strokes of light and shadow, like palette-knife painting.
-  - Use a warm, dramatic palette with strong light vs shadow: pick a light direction and make
-    lit facets noticeably brighter, shadow facets deeper/cooler. Bold contrast, not pastel.
-  - Vary adjacent facet colors slightly (hue + value) so the surface shimmers like brushwork.
-  - Layer back-to-front: background, then large form blocks, then mid facets, then sharp highlights.
-  - Keep edges angular and intentional; avoid perfectly smooth circles for the subject itself.
-  - Optionally sign it with small text (font display) in a corner.
-Compose deliberately and keep everything inside the canvas."""
-
-MUSIC_PRIMER = """You write ONLY VokkScript music code. No prose, no markdown fences.
+MUSIC_PRIMER = """You write ONLY VokkImageMusicScript song code. No prose, no markdown fences.
 Grammar:
-  music NAME {
+  song NAME {
     tempo BPM
     wave sine|triangle|square|sawtooth
     play NOTE DUR NOTE DUR ...        # NOTE e.g. C4 D4 E4 F#4 A3; "_" = rest; DUR in beats
     repeat N { play ... }
   }
-One music block. A short pleasant recognizable melody (8-24 notes)."""
+One song block. A short pleasant recognizable melody (8-24 notes)."""
 
 
 class CreativeBrain(Brain):
-    """Asks an LLM to write VokkScript, then compiles it through the real
-    IR pipeline (code -> Vokk IR -> image/music). No image/audio API; the
-    artifact is PROGRAMMED and fully reproducible."""
+    """Asks an LLM to write VokkImageMusicScript, then compiles it with the real
+    renderer (code -> soft SVG / playable score). No image/audio API; reproducible."""
     btype = BrainType.CANVAS
     conf = 0.92
     engine = "gemini"
     primer = VISUAL_PRIMER
-    want = "visual"
+    want = "image"          # "image" or "music"
 
     def generate(self, prompt: str) -> BrainResponse:
         t0 = time.time()
-        ask = f"{self.primer}\n\nUser request: {prompt}\n\nReturn only the VokkScript {self.want} block."
+        lang = "image" if self.want == "image" else "song"
+        ask = f"{self.primer}\n\nUser request: {prompt}\n\nReturn only the VokkImageMusicScript {lang} block."
         if HAVE_ANY_KEY:
             try:
-                raw = _call_engine(self.engine, ask, "You are a precise VokkScript generator.", 0.6)
+                raw = _call_engine(self.engine, ask, "You are a precise VokkImageMusicScript generator.", 0.6)
                 live = True
             except Exception:
                 raw, live = self._fallback(prompt), False
@@ -447,22 +458,22 @@ class CreativeBrain(Brain):
             raw, live = self._fallback(prompt), False
 
         source = _strip_fences(raw)
-        arts = run_vokk(source)
+        arts = run_imagemusic(source)
         art = next((a for a in arts if a.get("kind") == self.want), None)
-        ok = art and (art.get("svg") if self.want == "visual" else art.get("score"))
-        if not ok:                      # invalid VokkScript -> guaranteed-valid fallback
+        ok = art and (art.get("svg") if self.want == "image" else art.get("score"))
+        if not ok:                      # invalid -> guaranteed-valid fallback
             source = self._fallback(prompt)
-            art = run_vokk(source)[0]
+            art = run_imagemusic(source)[0]
 
-        verb = "drew" if self.want == "visual" else "composed"
-        content = (f"VOKK {self.btype.value.title()} {verb} this by writing VokkScript, "
-                   f"translating it to Vokk IR, then rendering — no image/audio API, reproducible.")
+        verb = "painted" if self.want == "image" else "composed"
+        content = (f"VOKK {self.btype.value.title()} {verb} this in VokkImageMusicScript — "
+                   f"its own image/music language — no image/audio API, fully reproducible.")
         return BrainResponse(
             brain=self.btype, content=content,
             latency_ms=round((time.time() - t0) * 1000, 1),
             tokens_used=len(prompt + source) // 4, confidence=self.conf,
             svg=art.get("svg"), score=art.get("score"),
-            vokk_source=art.get("vokkscript", source), live=live,
+            vokk_source=source, live=live,
         )
 
     def _fallback(self, prompt: str) -> str:
@@ -470,17 +481,16 @@ class CreativeBrain(Brain):
 
 
 class CanvasBrain(CreativeBrain):
-    btype, primer, want = BrainType.CANVAS, VISUAL_PRIMER, "visual"
+    btype, primer, want = BrainType.CANVAS, VISUAL_PRIMER, "image"
 
     def _fallback(self, prompt: str) -> str:
-        return ('visual Fallback {\n'
-                '  canvas 400 x 300\n'
-                '  background #161a22\n'
-                '  circle 200 150 70 fill #7aa2ff opacity 0.9\n'
-                '  circle 175 135 12 fill #0e1015\n'
-                '  circle 225 135 12 fill #0e1015\n'
-                '  line 168 185 232 185 stroke #0e1015 sw 4\n'
-                '  text 95 285 "VOKK Canvas" fill #5fe0b7 size 22\n'
+        return ('image Fallback {\n'
+                '  size 420 320\n'
+                '  wash #20283a #e9b27a\n'
+                '  glow 300 110 170 #ffe6b0 intensity 1.3\n'
+                '  light 300 110 34 #ffffff\n'
+                '  field 0,230 420,210 420,320 0,320 #2a2433 blur 14 opacity 0.85\n'
+                '  blob 120 250 70 #3a3550 blur 12 opacity 0.6\n'
                 '}')
 
 
@@ -488,7 +498,7 @@ class ComposerBrain(CreativeBrain):
     btype, primer, want = BrainType.COMPOSER, MUSIC_PRIMER, "music"
 
     def _fallback(self, prompt: str) -> str:
-        return ('music Fallback {\n'
+        return ('song Fallback {\n'
                 '  tempo 120\n'
                 '  wave triangle\n'
                 '  play C4 1 E4 1 G4 1 C5 1 G4 1 E4 1 C4 2\n'
@@ -609,6 +619,7 @@ class CortexRouter:
         self.brains = {
             BrainType.CORE: CoreBrain(), BrainType.SWIFT: SwiftBrain(),
             BrainType.SCOUT: ScoutBrain(), BrainType.PULSE: PulseBrain(),
+            BrainType.FORGE: ForgeBrain(),
             BrainType.CANVAS: CanvasBrain(), BrainType.COMPOSER: ComposerBrain(),
             BrainType.VISTA: VistaBrain(),
         }

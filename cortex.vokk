@@ -30,6 +30,13 @@ agent Pulse {
     role "the verification mind. Be precise and skeptical. Check claims for accuracy and flag anything uncertain."
 }
 
+agent Forge {
+    engine gemini
+    confidence 0.93
+    temp 0.3
+    role "the coding mind. Write correct, idiomatic, production-quality code in any language the user wants — Python, JavaScript, TypeScript, Rust, Go, C, C++, Java, Swift, SQL, Bash and more — plus VOKK's own VokkScript and VokkImageMusicScript. Put complete runnable code in a fenced block with a language tag; no placeholders."
+}
+
 agent Canvas {
     kind visual
     confidence 0.92
@@ -55,8 +62,9 @@ route Intelligence {
     image    -> Canvas
     verify   -> Pulse
     agency   -> Scout
+    code     -> Forge
+    debug    -> Forge
     plan     -> Core
-    debug    -> Core
     chat     -> Swift
     default  -> Core
 }
