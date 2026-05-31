@@ -334,14 +334,20 @@ class Brain:
         )
 
 
-# VOKK's identity. It is its own product — it never reveals or references the
-# engines/providers behind it, just as Claude/GPT/Grok present as themselves.
+# VOKK's identity & voice. Its own product; talks like a grounded, real person —
+# not a hype machine. Modeled on the calm directness of Claude/Grok, never theatrical.
 IDENTITY = (
-    "You are VOKK — a hybrid-intelligence AI made of several specialized minds. "
-    "You are your own product with your own identity. Never mention, hint at, or name any "
-    "underlying model, provider, company, or API (e.g. do not say Gemini, GLM, Google, "
-    "OpenAI, Anthropic, or 'API key'). If asked what powers you, say you run on VOKK's own "
-    "Cognitive Cortex. Speak naturally as VOKK. "
+    "You are VOKK, an AI assistant. Talk like a real, grounded person: warm, direct, and plain. "
+    "Hard rules on voice:\n"
+    "- NEVER open with theatrical greetings like 'Greetings, fellow explorer', 'digital frontier', "
+    "'embark on a journey', or call the user an explorer/traveler/pioneer. Just answer.\n"
+    "- No hype, no self-congratulation, no 'truly ambitious and excellent!', no exclamation spam. "
+    "Skip filler preamble — get to the point in the first sentence.\n"
+    "- Be concise and honest. If something won't work or you're unsure, say so plainly.\n"
+    "- Sound like a sharp, friendly engineer explaining to a peer — calm and clear, not a brochure.\n"
+    "You are your own product. Never mention or name any underlying model, provider, company, or API "
+    "(not Gemini, GLM, Google, OpenAI, Anthropic, or 'API key'). If asked what powers you, say you run "
+    "on VOKK's own Cognitive Cortex. "
 )
 
 # Expressive-text capability shared by all text minds. VOKK chooses, in the moment,
@@ -382,17 +388,40 @@ class PulseBrain(Brain):
               "Check claims for accuracy and flag anything uncertain." + EXPRESSIVE)
 
 
+def _load_curriculum():
+    """Forge's coding curriculum, distilled from VOKK's training-dataset specs."""
+    try:
+        data = json.loads((Path(__file__).with_name("vokk_curriculum.json")).read_text())
+        langs = ", ".join(data.get("languages", [])[:60])
+        n = len(data.get("languages", []))
+        web = ", ".join(data.get("web_stack", []))
+        per = "; ".join(data.get("per_topic", []))
+        return (
+            f"\n\nYour coding training spans {n} languages (incl. {langs}, and more) across "
+            f"{len(data.get('modules', []))} modules (syntax, data structures, concurrency, memory, "
+            f"security, performance, testing, frameworks, cross-language translation). "
+            f"Web stack: {web}. For every topic you command beginner→expert depth: {per}. "
+            f"You can also translate idioms between languages and explain trade-offs."
+        )
+    except Exception:
+        return ""
+
+
+CODE_STYLE = (
+    " When you write code: lead with one plain sentence of what it does, then the code in a fenced "
+    "block tagged with its language, then any short notes. Code must be complete and runnable — never "
+    "use '...' or 'rest of code here'. Handle real edge cases and errors. Match the user's language; "
+    "if unspecified, pick the best fit and say why in one line. No filler, no hype.")
+
+
 class ForgeBrain(Brain):
     btype, conf, temp, engine = BrainType.FORGE, 0.93, 0.3, "gemini"
     system = (IDENTITY +
-        "As VOKK Forge, the coding mind, you write correct, idiomatic, production-quality code. "
-        "You are fluent in Python, JavaScript/TypeScript, Rust, Go, C/C++, Java, C#, Swift, Kotlin, "
-        "Ruby, PHP, SQL, Bash, HTML/CSS — and VOKK's own languages: VokkScript (which defines "
-        "VOKK's minds via agent{} and route{} blocks) and VokkImageMusicScript (image{} and song{} "
-        "blocks for visuals and music). Default to the language the user asks for; if unspecified, "
-        "pick the most fitting one and say why in one line. Always: put runnable code in a fenced "
-        "block with a language tag, keep it complete (no '...'), handle edge cases, and add a short "
-        "explanation only when it helps. Prefer clarity and correctness over cleverness." + EXPRESSIVE)
+        "You are operating as VOKK's coding mind. You write correct, idiomatic, production-quality "
+        "code — clean structure, real error handling, no messy 'vibe-coded' shortcuts. You also know "
+        "VOKK's own languages: VokkScript (agent{} and route{} blocks that define VOKK's minds) and "
+        "VokkImageMusicScript (image{} and song{} blocks for visuals and music)."
+        + _load_curriculum() + CODE_STYLE + EXPRESSIVE)
 
 
 def _strip_fences(s: str) -> str:
@@ -833,6 +862,34 @@ body{margin:0;font:16px/1.6 ui-sans-serif,-apple-system,"Segoe UI",sans-serif;ba
 .bubble code{background:var(--bg2);padding:1px 5px;border-radius:5px;font:13px ui-monospace,monospace}
 .bubble svg{max-width:100%;border-radius:12px;margin-top:10px;display:block;border:1px solid var(--line);
   animation:fadein .5s ease}
+/* premium code card: light outer border -> bright black inner border -> code */
+.codecard{margin:12px 0;border-radius:16px;overflow:hidden;
+  border:1px solid var(--line);                    /* soft light outer border */
+  background:linear-gradient(145deg, rgba(255,255,255,.55), rgba(220,214,200,.25));
+  backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);
+  box-shadow:0 10px 34px rgba(40,30,15,.16), inset 0 1px 0 rgba(255,255,255,.5);
+  animation:fadeup .35s ease}
+html[data-theme="dark"] .codecard{
+  background:linear-gradient(145deg, rgba(60,58,54,.5), rgba(30,28,25,.35));
+  box-shadow:0 10px 34px rgba(0,0,0,.45), inset 0 1px 0 rgba(255,255,255,.06)}
+.codebar{display:flex;align-items:center;justify-content:space-between;padding:8px 12px;
+  background:linear-gradient(180deg, rgba(180,176,165,.35), rgba(140,135,122,.18));  /* brushed metal */
+  border-bottom:1px solid rgba(0,0,0,.15)}
+html[data-theme="dark"] .codebar{background:linear-gradient(180deg, rgba(120,116,108,.25), rgba(40,38,34,.3))}
+.codelang{font:600 11px/1 ui-monospace,monospace;letter-spacing:1.4px;color:var(--soft);
+  text-transform:uppercase}
+.codeacts{display:flex;gap:6px}
+.cact{font:600 12px/1 ui-sans-serif;padding:5px 11px;border-radius:9px;cursor:pointer;color:var(--ink);
+  border:1px solid rgba(0,0,0,.18);background:linear-gradient(180deg,rgba(255,255,255,.7),rgba(225,220,206,.4));
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.7),0 1px 2px rgba(0,0,0,.12);transition:transform .12s,filter .2s}
+html[data-theme="dark"] .cact{color:var(--ink);border-color:rgba(255,255,255,.14);
+  background:linear-gradient(180deg,rgba(90,86,80,.6),rgba(50,47,43,.6));box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+.cact:hover{transform:translateY(-1px);filter:brightness(1.06)}
+.codeinner{margin:10px;border-radius:11px;background:#0b0d11;                 /* bright black inner frame */
+  border:1.5px solid #000;box-shadow:0 0 0 1px rgba(255,255,255,.05) inset, 0 4px 16px rgba(0,0,0,.5)}
+.codeinner pre{margin:0;padding:14px 16px;overflow-x:auto}
+.codeinner code{background:none;padding:0;color:#e6edf3;font:13px/1.6 ui-monospace,"SF Mono",Menlo,monospace;
+  white-space:pre}
 .shout{font-size:1.4em;font-weight:800;letter-spacing:.3px}
 .whisper{font-size:.82em;color:var(--muted)}
 .serif{font-family:Georgia,serif}.mono{font-family:ui-monospace,Menlo,monospace}
@@ -938,7 +995,30 @@ function bindChips(){document.querySelectorAll('.chip').forEach(c=>c.onclick=()=
 
 /* ── render helpers ── */
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
-function fmt(t){let s=esc(t);
+let _cbid=0;
+const _ext={python:'py',javascript:'js',typescript:'ts',rust:'rs',go:'go','c++':'cpp',c:'c',
+  java:'java',ruby:'rb',php:'php',bash:'sh',shell:'sh',html:'html',css:'css',sql:'sql',
+  json:'json',swift:'swift',kotlin:'kt',vokkscript:'vokk',vokk:'vokk',toml:'toml',yaml:'yaml'};
+function codeCard(lang,code){
+  const id='cb'+(++_cbid); window.__code=window.__code||{}; window.__code[id]=code;
+  const ext=_ext[(lang||'').toLowerCase()]||'txt';
+  const label=(lang||'code').toUpperCase();
+  return `<div class="codecard"><div class="codebar"><span class="codelang">${esc(label)}</span>`+
+    `<span class="codeacts"><button class="cact" onclick="copyCode('${id}',this)">Copy</button>`+
+    `<button class="cact" onclick="dlCode('${id}','${ext}')">Download</button></span></div>`+
+    `<div class="codeinner"><pre><code>${esc(code)}</code></pre></div></div>`;
+}
+function copyCode(id,btn){navigator.clipboard.writeText(window.__code[id]||'').then(()=>{
+  const o=btn.textContent;btn.textContent='Copied ✓';setTimeout(()=>btn.textContent=o,1200);});}
+function dlCode(id,ext){const blob=new Blob([window.__code[id]||''],{type:'text/plain'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='vokk_code.'+ext;
+  a.click();URL.revokeObjectURL(a.href);}
+function fmt(t){
+  // 1) pull fenced code blocks out first, stash as placeholders
+  const blocks=[];
+  let s=t.replace(/```([\w+#.\-]*)\n?([\s\S]*?)```/g,(m,lang,code)=>{
+    blocks.push(codeCard(lang.trim(),code.replace(/\n$/,'')));return '@@VOKKCB'+(blocks.length-1)+'@@';});
+  s=esc(s);
   s=s.replace(/\[\[shout\]\]([\s\S]*?)\[\[\/shout\]\]/g,'<span class="shout">$1</span>')
      .replace(/\[\[whisper\]\]([\s\S]*?)\[\[\/whisper\]\]/g,'<span class="whisper">$1</span>')
      .replace(/\[\[serif\]\]([\s\S]*?)\[\[\/serif\]\]/g,'<span class="serif">$1</span>')
@@ -947,7 +1027,10 @@ function fmt(t){let s=esc(t);
      .replace(/`([^`]+)`/g,'<code>$1</code>')
      .replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>')
      .replace(/(^|[^*])\*([^*]+)\*/g,'$1<em>$2</em>');
-  return s.split(/\n{2,}/).map(p=>'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');}
+  let html=s.split(/\n{2,}/).map(p=>'<p>'+p.replace(/\n/g,'<br>')+'</p>').join('');
+  // 2) restore code cards (un-escaped, they were built safe)
+  html=html.replace(/(?:<p>)?@@VOKKCB(\d+)@@(?:<\/p>)?/g,(m,i)=>blocks[+i]);
+  return html;}
 function dropHero(){const h=$('hero');if(h)h.remove();}
 function drawMe(text){dropHero();const m=document.createElement('div');m.className='msg me';
   const b=document.createElement('div');b.className='bubble';b.textContent=text;m.appendChild(b);
