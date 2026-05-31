@@ -678,7 +678,11 @@ class CortexRouter:
             if "temp" in spec:
                 brain.temp = float(spec["temp"])
             if "role" in spec:  # rebuild system prompt from VokkScript-declared role
-                brain.system = IDENTITY + "As VOKK " + name + ", " + str(spec["role"]) + EXPRESSIVE
+                # Internal role only — the mind must NOT announce itself as "VOKK <Name>";
+                # the user only ever talks to one assistant called VOKK.
+                brain.system = (IDENTITY + "Internally you are handling this as VOKK's "
+                                + str(spec["role"]) + " But never say 'I am VOKK " + name
+                                + "' or name your sub-mind; just answer as VOKK." + EXPRESSIVE)
         # build routing table {task_class -> BrainType} from VokkScript route block
         for task, agent in cfg.get("routes", {}).items():
             bt = next((b for b in BrainType if b.value == agent.lower()), None)
@@ -737,21 +741,43 @@ class CortexRouter:
             return BrainDecision(BrainType.CORE, None, 0.92, "Deep reasoning: Core", [BrainType.SCOUT, BrainType.SWIFT])
         return BrainDecision(BrainType.CORE, None, 0.85, "Default: Core balanced mode", [BrainType.SWIFT])
 
-    def route(self, prompt, user="anonymous"):
+    def route(self, prompt, user="anonymous", mode="chat"):
         f = self._features(prompt)
         d = self._route(f)
         t0 = time.time()
+
+        # THINK mode: a real reasoning pass first (the model plans, then answers).
+        thinking, think_ms = None, 0.0
+        is_creative = d.primary in (BrainType.CANVAS, BrainType.COMPOSER, BrainType.VISTA)
+        if mode == "think" and HAVE_ANY_KEY and not is_creative:
+            tt = time.time()
+            try:
+                thinking = _call_engine(
+                    self.brains[d.primary].engine, prompt,
+                    "Think step by step about how to answer the user. Lay out your reasoning, "
+                    "considerations, and plan as a numbered or bulleted thought process. Do NOT "
+                    "give the final answer yet — only the reasoning.", 0.5)
+            except Exception:
+                thinking = None
+            think_ms = (time.time() - tt) * 1000
+
+        ta = time.time()
+        # In think mode, feed the reasoning back so the answer builds on it.
+        gen_prompt = prompt if not thinking else (
+            f"{prompt}\n\n[Your private reasoning so far:\n{thinking}\n]\nNow give the final answer.")
         try:
-            resp = self.brains[d.primary].generate(prompt)
+            resp = self.brains[d.primary].generate(gen_prompt)
         except Exception as e:
             resp = None
             for bt in d.failover_chain:
                 try:
-                    resp = self.brains[bt].generate(prompt); break
+                    resp = self.brains[bt].generate(gen_prompt); break
                 except Exception:
                     continue
             if resp is None:
                 raise RuntimeError(f"All minds failed. Last error: {e}")
+        answer_ms = (time.time() - ta) * 1000
+
         verification_conf = None
         if d.verifier and resp.live:
             try:
@@ -763,12 +789,16 @@ class CortexRouter:
         resp.audit_hash = self.audit.log(resp, d, prompt, user)
         return {
             "response": resp.content,
+            "thinking": thinking,
             "svg": resp.svg,
             "score": resp.score,
             "png_b64": resp.png_b64,
             "vokk_source": resp.vokk_source,
             "brain_used": resp.brain.value,
             "live": resp.live,
+            "mode": mode,
+            "think_ms": round(think_ms, 1),
+            "answer_ms": round(answer_ms, 1),
             "latency_ms": round(total, 1),
             "tokens_used": resp.tokens_used,
             "routing_confidence": d.confidence,
@@ -918,6 +948,21 @@ textarea{flex:1;resize:none;background:transparent;color:var(--ink);border:0;out
   font-size:17px;cursor:pointer;flex:none;transition:transform .15s,opacity .2s}
 #send:hover:not(:disabled){transform:scale(1.08)}#send:disabled{opacity:.4;cursor:default}
 .hint{max-width:720px;margin:8px auto 0;text-align:center;color:var(--muted);font-size:11.5px}
+.modes{max-width:720px;margin:0 auto 8px;display:flex;gap:8px;align-items:center}
+.mode{padding:6px 14px;border-radius:20px;border:1px solid var(--line);background:var(--panel);
+  color:var(--soft);font-size:13px;font-weight:600;cursor:pointer;transition:all .2s}
+.mode:hover{background:var(--hover)}
+.mode.active{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.showthink{margin-left:auto;font-size:12px;color:var(--muted);display:flex;align-items:center;gap:5px;cursor:pointer}
+.thinkbox{margin:8px 0;border-radius:12px;border:1px solid var(--line);overflow:hidden;
+  background:rgba(255,255,255,.35);backdrop-filter:blur(8px)}
+html[data-theme="dark"] .thinkbox{background:rgba(255,255,255,.04)}
+.thinkhead{padding:7px 12px;font-size:12px;font-weight:600;color:var(--soft);cursor:pointer;
+  display:flex;align-items:center;gap:8px;user-select:none}
+.thinkbody{padding:0 14px 12px;font-size:13px;line-height:1.6;color:#fbfbfd;white-space:pre-wrap;
+  opacity:.78;font-style:italic}                       /* soft white thinking text */
+html[data-theme="light"] .thinkbody{color:#6b6557}
+.timing{font-size:11px;color:var(--muted)}
 @keyframes fadeup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes fadein{from{opacity:0}to{opacity:1}}
 @keyframes slidein{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
@@ -948,9 +993,14 @@ textarea{flex:1;resize:none;background:transparent;color:var(--ink);border:0;out
     </div>
   </div></div></div>
   <footer>
+    <div class="modes">
+      <button class="mode active" id="m-chat" data-mode="chat">⚡ Chat</button>
+      <button class="mode" id="m-think" data-mode="think">✶ Think</button>
+      <label class="showthink"><input type="checkbox" id="showthink" checked> show thinking</label>
+    </div>
     <div class="dock"><textarea id="box" rows="1" placeholder="Message VOKK…"></textarea>
       <button id="send" title="Send">↑</button></div>
-    <div class="hint">VOKK chooses one of six minds · images & music are written as VokkScript</div>
+    <div class="hint" id="hint">Chat = fast answers · Think = reasons for a while before answering</div>
   </footer>
 </div>
 <script>
@@ -970,7 +1020,10 @@ $('log').addEventListener('scroll',()=>$('topbar').classList.toggle('scrolled',l
 
 /* ── conversation store (local) ── */
 let convs=JSON.parse(localStorage.getItem('vokk-convs')||'[]');
+let drafts=JSON.parse(localStorage.getItem('vokk-drafts')||'{}');   // per-session unsent text
 let curId=null;
+function loadDraft(){box.value=drafts[curId||'__new']||'';box.style.height='28px';
+  box.style.height=Math.min(box.scrollHeight,160)+'px';}
 const save=()=>localStorage.setItem('vokk-convs',JSON.stringify(convs));
 const cur=()=>convs.find(c=>c.id===curId);
 function renderList(){const L=$('convlist');L.innerHTML='';
@@ -986,10 +1039,10 @@ function newChat(){curId=null;$('topttl').textContent='New chat';
     '<div class="chips"><div class="chip" data-q="Draw a calm mountain sunrise">Draw a sunrise</div>'+
     '<div class="chip" data-q="Compose a gentle lo-fi melody">Compose a melody</div>'+
     '<div class="chip" data-q="Help me plan my week">Plan my week</div></div></div>';
-  bindChips();renderList();box.focus();}
+  bindChips();renderList();loadDraft();box.focus();}
 function openConv(id){curId=id;const c=cur();$('topttl').textContent=c.title||'Chat';
   col.innerHTML='';c.msgs.forEach(m=>m.who==='me'?drawMe(m.text):drawAi(m.data));
-  renderList();logEl.scrollTop=logEl.scrollHeight;}
+  renderList();loadDraft();logEl.scrollTop=logEl.scrollHeight;}
 $('newchat').onclick=newChat;
 function bindChips(){document.querySelectorAll('.chip').forEach(c=>c.onclick=()=>{box.value=c.dataset.q;ask();});}
 
@@ -1036,8 +1089,19 @@ function drawMe(text){dropHero();const m=document.createElement('div');m.classNa
   const b=document.createElement('div');b.className='bubble';b.textContent=text;m.appendChild(b);
   col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 function drawAi(d){dropHero();const m=document.createElement('div');m.className='msg ai';
+  if(d.error){const b=document.createElement('div');b.className='bubble';
+    b.innerHTML='<span class="whisper">⚠ '+esc(d.error)+'</span>';m.appendChild(b);col.appendChild(m);return b;}
+  // thinking panel (soft white), shown when present and "show thinking" is on
+  if(d.thinking && $('showthink').checked){
+    const tb=document.createElement('div');tb.className='thinkbox';
+    const open=true;
+    tb.innerHTML='<div class="thinkhead">✶ Thought for '+((d.think_ms||0)/1000).toFixed(1)+'s '+
+      '<span style="opacity:.6">(click to toggle)</span></div>'+
+      '<div class="thinkbody"'+(open?'':' style="display:none"')+'>'+esc(d.thinking)+'</div>';
+    tb.querySelector('.thinkhead').onclick=()=>{const bd=tb.querySelector('.thinkbody');
+      bd.style.display=bd.style.display==='none'?'block':'none';};
+    m.appendChild(tb);}
   const b=document.createElement('div');b.className='bubble';m.appendChild(b);
-  if(d.error){b.innerHTML='<span class="whisper">⚠ '+esc(d.error)+'</span>';col.appendChild(m);return b;}
   b.innerHTML=fmt(d.response||'');
   if(d.svg){const w=document.createElement('div');w.className='art';w.innerHTML=d.svg;b.appendChild(w);}
   if(d.png_b64){const im=new Image();im.className='art';im.style.maxWidth='100%';im.style.borderRadius='12px';
@@ -1050,8 +1114,10 @@ function drawAi(d){dropHero();const m=document.createElement('div');m.className=
     sb.onclick=()=>pre.style.display=pre.style.display==='none'?'block':'none';
     b.appendChild(sb);b.appendChild(pre);}
   const t=d.brain_used,meta=document.createElement('div');meta.className='meta';
+  const timing=(d.think_ms?`thought ${(d.think_ms/1000).toFixed(1)}s · `:'')+
+    `answered ${((d.answer_ms||d.latency_ms)/1000).toFixed(1)}s`;
   meta.innerHTML=`<span class="tag ${t}">${(t||'').toUpperCase()}</span><span>${esc(d.routing_reasoning||'')}</span>`+
-    `<span>${d.latency_ms} ms</span>`+(d.live?'':'<span>⚠ mock</span>')+
+    `<span class="timing">${timing}</span>`+(d.live?'':'<span>⚠ mock</span>')+
     (d.verified?'<span>✓ verified</span>':'')+`<span>audit ${d.audit_hash}</span>`;
   m.appendChild(meta);col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 
@@ -1067,19 +1133,40 @@ function playScore(score,wave){actx=actx||new(window.AudioContext||window.webkit
     g.gain.exponentialRampToValueAtTime(0.25,t+0.02);g.gain.exponentialRampToValueAtTime(0.0001,t+n.dur*0.95);
     o.connect(g);g.connect(actx.destination);o.start(t);o.stop(t+n.dur);}t+=n.dur;}}
 
-box.addEventListener('input',()=>{box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';});
+box.addEventListener('input',()=>{box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';
+  // per-session draft persistence: remember what you were typing in THIS session
+  drafts[curId||'__new']=box.value;localStorage.setItem('vokk-drafts',JSON.stringify(drafts));});
+
+/* ── mode toggle (Chat / Think) ── */
+let mode=localStorage.getItem('vokk-mode')||'chat';
+function setMode(m){mode=m;localStorage.setItem('vokk-mode',m);
+  $('m-chat').classList.toggle('active',m==='chat');$('m-think').classList.toggle('active',m==='think');
+  $('hint').textContent=m==='think'?'Think = reasons for a while before answering (slower, deeper)'
+    :'Chat = fast answers · switch to Think for hard problems';}
+$('m-chat').onclick=()=>setMode('chat');$('m-think').onclick=()=>setMode('think');setMode(mode);
 
 async function ask(){const q=box.value.trim();if(!q)return;box.value='';box.style.height='28px';send.disabled=true;
-  if(!curId){curId=Date.now()+'';convs.push({id:curId,title:q.slice(0,40),msgs:[]});save();}
-  const c=cur();drawMe(q);c.msgs.push({who:'me',text:q});if(c.msgs.length===1){$('topttl').textContent=c.title;}
+  if(!curId){curId=Date.now()+'';convs.push({id:curId,title:'New chat',msgs:[]});save();}
+  const reqId=curId;                       // bind this request to the session it started in
+  const c=cur();drawMe(q);c.msgs.push({who:'me',text:q});save();
+  delete drafts[reqId];localStorage.setItem('vokk-drafts',JSON.stringify(drafts));
+  // AI label on first message (replaces raw-first-line title)
+  if(c.msgs.filter(x=>x.who==='me').length===1){
+    fetch('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text:q})}).then(r=>r.json()).then(j=>{
+        const cc=convs.find(x=>x.id===reqId);if(cc){cc.title=j.title||'Chat';save();
+          if(curId===reqId)$('topttl').textContent=cc.title;renderList();}}).catch(()=>{});}
   const tm=document.createElement('div');tm.className='msg ai';
-  tm.innerHTML='<div class="bubble"><span class="typing"><span></span><span></span><span></span></span></div>';
-  col.appendChild(tm);logEl.scrollTop=logEl.scrollHeight;
+  tm.innerHTML='<div class="bubble"><span class="typing"><span></span><span></span><span></span></span>'+
+    (mode==='think'?' <span class="whisper">thinking…</span>':'')+'</div>';
+  if(curId===reqId){col.appendChild(tm);logEl.scrollTop=logEl.scrollHeight;}
   try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({prompt:q})});const d=await r.json();tm.remove();
-    drawAi(d);c.msgs.push({who:'ai',data:d});save();renderList();
-    if(d.score&&d.score.length)playScore(d.score,d.score[0]&&d.score[0].wave);
-  }catch(e){tm.remove();drawAi({error:''+e});}
+    body:JSON.stringify({prompt:q,mode:mode})});const d=await r.json();
+    const cc=convs.find(x=>x.id===reqId);if(cc)cc.msgs.push({who:'ai',data:d});save();renderList();
+    // only render into the view if the user is STILL in the session that asked
+    if(curId===reqId){tm.remove();drawAi(d);
+      if(d.score&&d.score.length)playScore(d.score,d.score[0]&&d.score[0].wave);}
+  }catch(e){if(curId===reqId){tm.remove();drawAi({error:''+e});}}
   finally{send.disabled=false;box.focus();}}
 send.onclick=ask;
 box.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask();}});
@@ -1118,15 +1205,28 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}))
 
     def do_POST(self):
-        if self.path != "/api/chat":
-            self._send(404, json.dumps({"error": "not found"})); return
         length = int(self.headers.get("Content-Length", 0))
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
+            # AI session labelling: short, meaningful title for a conversation.
+            if self.path == "/api/label":
+                first = (payload.get("text") or "").strip()[:500]
+                title = first[:40]
+                if HAVE_ANY_KEY and first:
+                    try:
+                        title = _call_engine("glm", first,
+                            "Write a 2-4 word title (Title Case, no quotes, no period) capturing this "
+                            "message's topic. Output ONLY the title.", 0.2).strip().strip('"')[:40]
+                    except Exception:
+                        pass
+                self._send(200, json.dumps({"title": title or "New chat"})); return
+            if self.path != "/api/chat":
+                self._send(404, json.dumps({"error": "not found"})); return
             prompt = (payload.get("prompt") or "").strip()
             if not prompt:
                 self._send(400, json.dumps({"error": "empty prompt"})); return
-            self._send(200, json.dumps(ROUTER.route(prompt)))
+            mode = (payload.get("mode") or "chat").strip()
+            self._send(200, json.dumps(ROUTER.route(prompt, mode=mode)))
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="ignore")[:300]
             self._send(200, json.dumps({"error": f"Gemini API {e.code}: {detail}"}))
