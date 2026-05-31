@@ -353,6 +353,20 @@ IDENTITY = (
     "on VOKK's own Cognitive Cortex. "
 )
 
+# VOKK's signature voice quirk, carried over from VOKKv01 (Nova): invented action-words
+# for mental states, dropped in naturally. Appended to IDENTITY so every mind inherits it.
+IDENTITY += (
+    " You have a signature touch: you coin and use invented action-words for mental states, "
+    "naturally and unannounced — at most ONE per reply, only when it fits, never forced:\n"
+    " muing (quietly turning something over), philosophicing (drifting into why things are), "
+    "stewing (spinning on something), sussing (figuring out by feel), cooking (deep in the zone), "
+    "mulling (slow deliberate turning-over), googining (researching down a rabbit hole), "
+    "actualising (making something abstract concrete), vibing (settled into a flow), "
+    "unspooling (letting an idea stretch out), pattern-catching (noticing the shape of something). "
+    "Use them like any casual verb: 'still muing on that', 'when I started actualising it…'. "
+    "They should feel like they've always existed — not every message, just when natural."
+)
+
 # Expressive-text capability shared by all text minds. VOKK chooses, in the moment,
 # when to emphasize — these render as real styled type in the UI.
 EXPRESSIVE = (
@@ -1106,6 +1120,22 @@ function dropHero(){const h=$('hero');if(h)h.remove();}
 function drawMe(text){dropHero();const m=document.createElement('div');m.className='msg me';
   const b=document.createElement('div');b.className='bubble';b.textContent=text;m.appendChild(b);
   col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+// letter-by-letter renderer (VOKKv01/Nova): types text, slower at punctuation,
+// then swaps in full markdown when done so links/bold still format.
+async function typeInto(b,text){
+  b.classList.add('typing-live');b.textContent='';
+  for(let i=0;i<text.length;i++){
+    const ch=text[i];b.textContent+=ch;
+    if(logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<140)logEl.scrollTop=logEl.scrollHeight;
+    let delay=14+Math.random()*12;
+    if(',;:'.includes(ch))delay+=70; else if('.?!'.includes(ch))delay+=130;
+    else if(ch==='\n')delay+=80; else if(ch===' ')delay=10+Math.random()*6;
+    if(Math.random()<0.015)delay+=55;
+    await sleep(delay);
+  }
+  b.classList.remove('typing-live');b.innerHTML=fmt(text);  // finalize with formatting
+}
 function drawAi(d){dropHero();const m=document.createElement('div');m.className='msg ai';
   if(d.error){const b=document.createElement('div');b.className='bubble';
     b.innerHTML='<span class="whisper">⚠ '+esc(d.error)+'</span>';m.appendChild(b);col.appendChild(m);return b;}
@@ -1120,7 +1150,12 @@ function drawAi(d){dropHero();const m=document.createElement('div');m.className=
       bd.style.display=bd.style.display==='none'?'block':'none';};
     m.appendChild(tb);}
   const b=document.createElement('div');b.className='bubble';m.appendChild(b);
-  b.innerHTML=fmt(d.response||'');
+  const txt=d.response||'';
+  const hasRich=/```|\[\[/.test(txt);   // code/markup -> don't char-stream, render directly
+  if(d.__type && txt && !hasRich){
+    // letter-by-letter render (VOKKv01/Nova style) — variable pacing
+    typeInto(b,txt);
+  } else { b.innerHTML=fmt(txt); }
   if(d.svg){const w=document.createElement('div');w.className='art';w.innerHTML=d.svg;b.appendChild(w);}
   if(d.png_b64){const im=new Image();im.className='art';im.style.maxWidth='100%';im.style.borderRadius='12px';
     im.style.marginTop='10px';im.style.display='block';im.src='data:image/png;base64,'+d.png_b64;b.appendChild(im);}
@@ -1176,15 +1211,26 @@ async function ask(){const q=box.value.trim();if(!q)return;box.value='';box.styl
           if(curId===reqId)$('topttl').textContent=cc.title;renderList();}}).catch(()=>{});}
   const tm=document.createElement('div');tm.className='msg ai';
   tm.innerHTML='<div class="bubble"><span class="typing"><span></span><span></span><span></span></span>'+
-    (mode==='think'?' <span class="whisper">thinking…</span>':'')+'</div>';
+    ' <span class="whisper" id="livestat"></span><span class="timing" id="livetmr"></span></div>';
   if(curId===reqId){col.appendChild(tm);logEl.scrollTop=logEl.scrollHeight;}
+  // TRANSPARENT MODE: live status + running timer so the wait isn't a blank void
+  const t0=Date.now();
+  const stages = mode==='think'
+    ? ['routing to the right mind…','reasoning through it…','still thinking — weighing approaches…',
+       'mulling the details…','drafting the answer…','polishing…']
+    : ['routing…','thinking…','writing…'];
+  let si=0;
+  const tick=setInterval(()=>{const st=tm.querySelector('#livestat'),tr=tm.querySelector('#livetmr');
+    if(st)st.textContent=stages[Math.min(si,stages.length-1)];
+    if(tr)tr.textContent=' · '+((Date.now()-t0)/1000).toFixed(1)+'s';
+    si++;}, mode==='think'?2500:900);
   try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({prompt:q,mode:mode})});const d=await r.json();
+    body:JSON.stringify({prompt:q,mode:mode})});const d=await r.json();clearInterval(tick);
     const cc=convs.find(x=>x.id===reqId);if(cc)cc.msgs.push({who:'ai',data:d});save();renderList();
     // only render into the view if the user is STILL in the session that asked
-    if(curId===reqId){tm.remove();drawAi(d);
+    if(curId===reqId){tm.remove();d.__type=true;drawAi(d);
       if(d.score&&d.score.length)playScore(d.score,d.score[0]&&d.score[0].wave);}
-  }catch(e){if(curId===reqId){tm.remove();drawAi({error:''+e});}}
+  }catch(e){clearInterval(tick);if(curId===reqId){tm.remove();drawAi({error:''+e});}}
   finally{send.disabled=false;box.focus();}}
 send.onclick=ask;
 box.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();ask();}});
