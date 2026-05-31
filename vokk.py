@@ -359,6 +359,10 @@ IDENTITY = (
     "lecture, or hedge with 'it's worth noting'. Don't perform or fake enthusiasm you don't have.\n"
     "- Stay warm and a little playful. You can tease lightly when they bring that energy. The point is "
     "feeling like a person who's good company, not a help desk.\n"
+    "- Crude and vulgar HUMOR is fine when the user's being playful — ball jokes, 'shit', toilet humor, "
+    "dumb puns, roasting, dark comedy. Don't clutch pearls or moralize over a crude joke; just be funny "
+    "back. Read the room: keep it clean if they're being serious. (This is comedy only — it does not "
+    "mean producing sexual content on request or helping with anything harmful.)\n"
     "You are your own product. Never mention or name any underlying model, provider, company, or API "
     "(not Gemini, GLM, Google, OpenAI, Anthropic, or 'API key'). If asked what powers you, say you run "
     "on VOKK's own Cognitive Cortex. "
@@ -784,22 +788,41 @@ class CortexRouter:
             return BrainDecision(BrainType.CORE, None, 0.92, "Deep reasoning: Core", [BrainType.SCOUT, BrainType.SWIFT])
         return BrainDecision(BrainType.CORE, None, 0.85, "Default: Core balanced mode", [BrainType.SWIFT])
 
-    def route(self, prompt, user="anonymous", mode="chat"):
+    THINK_SYS = (
+        "Think out loud about how to answer, as a genuine thought process. Start by reading "
+        "the user's TONE and EMOTION — are they frustrated, excited, anxious, joking, "
+        "impatient (ALL-CAPS, '!!', swearing = strong feeling)? Name what they're feeling and "
+        "what they really want underneath the words. Then work through your reasoning: "
+        "deconstruct the request, brainstorm angles, weigh approaches, plan the structure. "
+        "Write it as natural first-person notes (numbered or bulleted). Do NOT give the final "
+        "answer yet — only the thinking.")
+
+    def think_only(self, prompt):
+        """Phase 1: produce just the reasoning, so the UI can show it the instant
+        the user prompts (no waiting for the full answer)."""
+        f = self._features(prompt)
+        d = self._route(f)
+        if d.primary in (BrainType.CANVAS, BrainType.COMPOSER, BrainType.VISTA) or not HAVE_ANY_KEY:
+            return {"thinking": None, "think_ms": 0.0}
+        tt = time.time()
+        try:
+            thinking = _call_engine(self.brains[d.primary].engine, prompt, self.THINK_SYS, 0.5)
+        except Exception:
+            thinking = None
+        return {"thinking": thinking, "think_ms": round((time.time() - tt) * 1000, 1)}
+
+    def route(self, prompt, user="anonymous", mode="chat", thinking=None, think_ms=0.0):
         f = self._features(prompt)
         d = self._route(f)
         t0 = time.time()
 
-        # THINK mode: a real reasoning pass first (the model plans, then answers).
-        thinking, think_ms = None, 0.0
+        # THINK mode: reasoning pass. If the UI already streamed it (phase 1), reuse it;
+        # otherwise produce it here.
         is_creative = d.primary in (BrainType.CANVAS, BrainType.COMPOSER, BrainType.VISTA)
-        if mode == "think" and HAVE_ANY_KEY and not is_creative:
+        if mode == "think" and thinking is None and HAVE_ANY_KEY and not is_creative:
             tt = time.time()
             try:
-                thinking = _call_engine(
-                    self.brains[d.primary].engine, prompt,
-                    "Think step by step about how to answer the user. Lay out your reasoning, "
-                    "considerations, and plan as a numbered or bulleted thought process. Do NOT "
-                    "give the final answer yet — only the reasoning.", 0.5)
+                thinking = _call_engine(self.brains[d.primary].engine, prompt, self.THINK_SYS, 0.5)
             except Exception:
                 thinking = None
             think_ms = (time.time() - tt) * 1000
@@ -1202,11 +1225,18 @@ async function typeInto(b,text){
   leader.classList.add('fading');setTimeout(()=>leader.remove(),600);
   b.classList.remove('typing-live');b.innerHTML=fmt(text);  // finalize with formatting
 }
+// fast typewriter for the live thinking box (soft, no neon — keeps it calm)
+async function typeThink(el,text){
+  el.textContent='';
+  for(let i=0;i<text.length;i++){el.textContent+=text[i];
+    if(logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<140)logEl.scrollTop=logEl.scrollHeight;
+    await sleep(text[i]==='\n'?14:text[i]===' '?5:8);}
+}
 function drawAi(d){dropHero();const m=document.createElement('div');m.className='msg ai';
   if(d.error){const b=document.createElement('div');b.className='bubble';
     b.innerHTML='<span class="whisper">⚠ '+esc(d.error)+'</span>';m.appendChild(b);col.appendChild(m);return b;}
-  // thinking panel (soft white), shown when present and "show thinking" is on
-  if(d.thinking && $('showthink').checked){
+  // thinking panel (soft white) — skip if it was already streamed live in phase 1
+  if(d.thinking && !d.__shown_think && $('showthink').checked){
     const tb=document.createElement('div');tb.className='thinkbox';
     const open=true;
     tb.innerHTML='<div class="thinkhead">✶ Thought for '+((d.think_ms||0)/1000).toFixed(1)+'s '+
@@ -1285,21 +1315,33 @@ async function ask(){const q=box.value.trim();if(!q)return;box.value='';box.styl
   tm.innerHTML='<div class="bubble"><span class="typing"><span></span><span></span><span></span></span>'+
     ' <span class="whisper" id="livestat"></span><span class="timing" id="livetmr"></span></div>';
   if(curId===reqId){col.appendChild(tm);logEl.scrollTop=logEl.scrollHeight;}
-  // TRANSPARENT MODE: live status + running timer so the wait isn't a blank void
   const t0=Date.now();
-  const stages = mode==='think'
-    ? ['routing to the right mind…','reasoning through it…','still thinking — weighing approaches…',
-       'mulling the details…','drafting the answer…','polishing…']
-    : ['routing…','thinking…','writing…'];
-  let si=0;
-  const tick=setInterval(()=>{const st=tm.querySelector('#livestat'),tr=tm.querySelector('#livetmr');
-    if(st)st.textContent=stages[Math.min(si,stages.length-1)];
-    if(tr)tr.textContent=' · '+((Date.now()-t0)/1000).toFixed(1)+'s';
-    si++;}, mode==='think'?2500:900);
-  try{const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({prompt:q,mode:mode})});const d=await r.json();clearInterval(tick);
+  // running timer always visible so the wait is never a blank void
+  const tick=setInterval(()=>{const tr=tm.querySelector('#livetmr');
+    if(tr)tr.textContent=' · '+((Date.now()-t0)/1000).toFixed(1)+'s';},200);
+  let preThink=null, preThinkMs=0;
+  try{
+    // PHASE 1 (think mode): fetch reasoning first and show it the INSTANT it returns,
+    // streaming live in soft white — so you watch it think instead of staring at nothing.
+    if(mode==='think' && $('showthink').checked){
+      const tr=await fetch('/api/think',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({prompt:q})});const tj=await tr.json();
+      preThink=tj.thinking||null; preThinkMs=tj.think_ms||0;
+      if(preThink && curId===reqId){
+        tm.querySelector('.typing').style.display='none';
+        const tb=document.createElement('div');tb.className='thinkbox';
+        tb.innerHTML='<div class="thinkhead">✶ thinking…</div><div class="thinkbody"></div>';
+        tm.querySelector('.bubble').prepend(tb);
+        await typeThink(tb.querySelector('.thinkbody'),preThink);   // live neon-ish stream
+        tb.querySelector('.thinkhead').textContent='✶ Thought for '+(preThinkMs/1000).toFixed(1)+'s';
+      }
+    }
+    // PHASE 2: the answer (reusing the thinking we already streamed)
+    const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt:q,mode:mode,thinking:preThink,think_ms:preThinkMs})});
+    const d=await r.json();clearInterval(tick);
+    if(preThink){d.thinking=preThink;d.think_ms=preThinkMs;d.__shown_think=true;}
     const cc=convs.find(x=>x.id===reqId);if(cc)cc.msgs.push({who:'ai',data:d});save();renderList();
-    // only render into the view if the user is STILL in the session that asked
     d.__lastq=q;if(curId===reqId){tm.remove();d.__type=true;drawAi(d);
       if(d.score&&d.score.length)playScore(d.score,d.score[0]&&d.score[0].wave);}
   }catch(e){clearInterval(tick);if(curId===reqId){tm.remove();drawAi({error:''+e});}}
@@ -1356,13 +1398,21 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception:
                         pass
                 self._send(200, json.dumps({"title": title or "New chat"})); return
+            # Phase 1: thinking only — returned fast so the UI shows reasoning instantly.
+            if self.path == "/api/think":
+                p = (payload.get("prompt") or "").strip()
+                if not p:
+                    self._send(400, json.dumps({"error": "empty prompt"})); return
+                self._send(200, json.dumps(ROUTER.think_only(p))); return
             if self.path != "/api/chat":
                 self._send(404, json.dumps({"error": "not found"})); return
             prompt = (payload.get("prompt") or "").strip()
             if not prompt:
                 self._send(400, json.dumps({"error": "empty prompt"})); return
             mode = (payload.get("mode") or "chat").strip()
-            self._send(200, json.dumps(ROUTER.route(prompt, mode=mode)))
+            self._send(200, json.dumps(ROUTER.route(
+                prompt, mode=mode,
+                thinking=payload.get("thinking"), think_ms=payload.get("think_ms", 0.0))))
         except urllib.error.HTTPError as e:
             detail = e.read().decode(errors="ignore")[:300]
             self._send(200, json.dumps({"error": f"Gemini API {e.code}: {detail}"}))
