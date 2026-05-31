@@ -94,6 +94,46 @@ def _esc(s: str) -> str:
     return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# ── VokkScript CONFIG parser: `agent NAME { ... }` and `route NAME { ... }` ──
+# This lets VOKK's own cognitive architecture be DEFINED in VokkScript and read
+# by the runtime — the AI is configured in its own language.
+def parse_cortex(source: str) -> Dict[str, Any]:
+    """Parse agent{} and route{} blocks into {'agents': {...}, 'routes': {...}}."""
+    agents: Dict[str, Dict[str, Any]] = {}
+    routes: Dict[str, str] = {}
+    n = len(source)
+    for m in re.finditer(r"\b(agent|route)\s+([A-Za-z_]\w*)\s*\{", source, re.M):
+        kind, name = m.group(1), m.group(2)
+        depth, j = 1, m.end()
+        while j < n and depth:
+            depth += (source[j] == "{") - (source[j] == "}")
+            j += 1
+        body = source[m.end():j - 1]
+        if kind == "agent":
+            spec: Dict[str, Any] = {}
+            for raw in body.splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                t = _tokens(line)
+                if len(t) >= 2:
+                    key = t[0].lower()
+                    val = " ".join(t[1:]).strip().strip('"')
+                    if _isnum(val):
+                        val = float(val)
+                    spec[key] = val
+            agents[name] = spec
+        else:  # route
+            for raw in body.splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+                mm = re.match(r"(\w+)\s*->\s*(\w+)", line)
+                if mm:
+                    routes[mm.group(1).lower()] = mm.group(2)
+    return {"agents": agents, "routes": routes}
+
+
 # ── block extraction (VokkScript: `visual NAME { ... }` / `music NAME { ... }`)
 def extract_blocks(source: str) -> List[Dict[str, str]]:
     blocks, n = [], len(source)

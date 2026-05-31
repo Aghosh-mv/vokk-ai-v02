@@ -34,7 +34,7 @@ from typing import Optional, Dict, Any, List
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # The .vokk creative-language interpreter — images & music are PROGRAMMED, not prompted.
-from vokk_lang import run_vokk, extract_blocks
+from vokk_lang import run_vokk, extract_blocks, parse_cortex
 # The procedural raster engine — VokkScript `scene {}` -> real atmospheric PNG pixels.
 from vokk_raster import run_scenes
 
@@ -612,6 +612,39 @@ class CortexRouter:
             BrainType.CANVAS: CanvasBrain(), BrainType.COMPOSER: ComposerBrain(),
             BrainType.VISTA: VistaBrain(),
         }
+        # VOKK's own mind is DEFINED IN VOKKSCRIPT (cortex.vokk) and loaded here,
+        # so the AI's architecture runs on the language VOKK created.
+        self.routes = {}
+        self._load_cortex()
+
+    def _load_cortex(self):
+        path = Path(__file__).with_name("cortex.vokk")
+        if not path.exists():
+            return
+        try:
+            cfg = parse_cortex(path.read_text())
+        except Exception:
+            return
+        # apply agent specs from VokkScript onto the live brains
+        for name, spec in cfg.get("agents", {}).items():
+            bt = next((b for b in BrainType if b.value == name.lower()), None)
+            if not bt or bt not in self.brains:
+                continue
+            brain = self.brains[bt]
+            if "engine" in spec:
+                brain.engine = str(spec["engine"])
+            if "confidence" in spec:
+                brain.conf = float(spec["confidence"])
+            if "temp" in spec:
+                brain.temp = float(spec["temp"])
+            if "role" in spec:  # rebuild system prompt from VokkScript-declared role
+                brain.system = IDENTITY + "As VOKK " + name + ", " + str(spec["role"]) + EXPRESSIVE
+        # build routing table {task_class -> BrainType} from VokkScript route block
+        for task, agent in cfg.get("routes", {}).items():
+            bt = next((b for b in BrainType if b.value == agent.lower()), None)
+            if bt:
+                self.routes[task] = bt
+        self.cortex_loaded = True
 
     def _features(self, prompt):
         """Model-classified features. Falls back to a neutral default (Core) only
@@ -641,18 +674,18 @@ class CortexRouter:
         return f
 
     def _route(self, f):
-        if f.music_required:
-            return BrainDecision(BrainType.COMPOSER, None, 0.92,
-                                 "Music request: Composer writes VokkScript → audio", [])
-        if f.scene_required:
-            return BrainDecision(BrainType.VISTA, None, 0.92,
-                                 "Atmospheric scene: Vista paints VokkScript → pixels", [BrainType.CANVAS])
-        if f.image_required:
-            return BrainDecision(BrainType.CANVAS, None, 0.92,
-                                 "Image request: Canvas writes VokkScript → SVG", [])
+        # Safety always overrides the VokkScript table (Pulse must verify).
         if f.safety_class in ("medical", "financial", "legal"):
             return BrainDecision(BrainType.CORE, BrainType.PULSE, 0.98,
                                  "Safety-critical: Core answers, Pulse verifies", [BrainType.SCOUT])
+        # Routing defined in cortex.vokk (VOKK's own language) drives the decision.
+        tc = f.task_class.name.lower()
+        if tc in self.routes:
+            primary = self.routes[tc]
+            fb = [self.routes.get("default", BrainType.CORE)]
+            return BrainDecision(primary, None, self.brains[primary].conf,
+                                 f"cortex.vokk routes '{tc}' → {primary.value}", fb)
+        # feature-based fallback (only if VokkScript table lacks this class)
         if f.agency_required:
             return BrainDecision(BrainType.SCOUT, None, 0.93,
                                  "Agency required: Scout plans the workflow", [BrainType.CORE])

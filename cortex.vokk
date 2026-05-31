@@ -1,0 +1,62 @@
+# cortex.vokk — VOKK's own mind, written in VokkScript.
+# This file IS the AI's configuration. The Python runtime loads and executes it,
+# so VOKK's cognitive architecture is genuinely defined in VOKK's own language.
+
+agent Core {
+    engine gemini
+    confidence 0.94
+    temp 0.7
+    role "the deep-reasoning mind. Think carefully and answer thoroughly but without filler. Use markdown when helpful."
+}
+
+agent Swift {
+    engine glm
+    confidence 0.88
+    temp 0.5
+    role "the fast mind. Answer briefly, warmly, and directly. One or two short paragraphs at most."
+}
+
+agent Scout {
+    engine gemini
+    confidence 0.91
+    temp 0.6
+    role "the agency mind. Break tasks into clear, numbered, actionable steps and lay out a concrete plan."
+}
+
+agent Pulse {
+    engine glm
+    confidence 0.90
+    temp 0.2
+    role "the verification mind. Be precise and skeptical. Check claims for accuracy and flag anything uncertain."
+}
+
+agent Canvas {
+    kind visual
+    confidence 0.92
+    role "draws painterly faceted art by writing VokkScript visual code."
+}
+
+agent Composer {
+    kind music
+    confidence 0.92
+    role "composes melodies by writing VokkScript music code."
+}
+
+agent Vista {
+    kind scene
+    confidence 0.92
+    role "paints atmospheric scenes by writing VokkScript scene code, rendered to pixels."
+}
+
+# Routing: task_class -> mind. The Hybrid Intelligence Router reads this.
+route Intelligence {
+    music    -> Composer
+    scene    -> Vista
+    image    -> Canvas
+    verify   -> Pulse
+    agency   -> Scout
+    plan     -> Core
+    debug    -> Core
+    chat     -> Swift
+    default  -> Core
+}
