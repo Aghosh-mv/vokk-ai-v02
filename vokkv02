@@ -1,0 +1,61 @@
+#!/bin/bash
+# vokkv02 — launcher for VOKK AI v02
+# Usage:
+#   vokkv02 --run     wake VOKK (starts the server, opens the browser)
+#   vokkv02 --stop    put VOKK to sleep (stops the server)
+#   vokkv02 --status  check if VOKK is awake
+
+PROJECT="/Users/tinkerspace/vokk-project"
+PORT="${VOKK_PORT:-8777}"
+URL="http://127.0.0.1:${PORT}"
+PIDFILE="$HOME/.vokk/vokk.pid"
+LOGFILE="$HOME/.vokk/vokk.log"
+mkdir -p "$HOME/.vokk"
+
+is_up() { curl -s -o /dev/null -m 1 "$URL" 2>/dev/null; }
+
+case "${1:---run}" in
+  --run|run|"")
+    if is_up; then
+      echo "VOKK is already awake at $URL"
+      open "$URL" 2>/dev/null
+      exit 0
+    fi
+    echo "Waking VOKK…"
+    cd "$PROJECT" || { echo "Project not found at $PROJECT"; exit 1; }
+    nohup python3 "$PROJECT/vokk.py" > "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+    # wait until it answers (up to ~10s)
+    for i in $(seq 1 20); do
+      if is_up; then
+        echo "VOKK is awake → $URL"
+        open "$URL" 2>/dev/null
+        exit 0
+      fi
+      sleep 0.5
+    done
+    echo "VOKK didn't come up in time. Last log lines:"
+    tail -n 15 "$LOGFILE"
+    exit 1
+    ;;
+  --stop|stop)
+    # match any process whose command line ends in vokk.py (any python binary)
+    if pkill -f "[v]okk\.py" 2>/dev/null; then
+      echo "VOKK is asleep."
+    else
+      echo "VOKK wasn't running."
+    fi
+    rm -f "$PIDFILE"
+    ;;
+  --status|status)
+    if is_up; then echo "VOKK is awake at $URL"; else echo "VOKK is asleep."; fi
+    ;;
+  -h|--help|help)
+    echo "vokkv02 --run | --stop | --status"
+    ;;
+  *)
+    echo "Unknown option: $1"
+    echo "vokkv02 --run | --stop | --status"
+    exit 1
+    ;;
+esac
