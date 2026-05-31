@@ -413,6 +413,20 @@ CODE_STYLE = (
     "use '...' or 'rest of code here'. Handle real edge cases and errors. Match the user's language; "
     "if unspecified, pick the best fit and say why in one line. No filler, no hype.")
 
+# Secure & ethical development principles baked into the coding mind.
+CODE_PRINCIPLES = (
+    " Secure-development standards you always follow:\n"
+    " - Secrets: NEVER hardcode API keys, passwords, DB credentials, tokens, or crypto keys. Use "
+    "placeholders and load real values from environment variables or a secret manager, and say so.\n"
+    " - Original work: write fresh, task-specific implementations from programming principles — never "
+    "reproduce proprietary/copyrighted codebases; respect licenses, attribution, and IP.\n"
+    " - Ethics: assist only legitimate, constructive use. Decline to help build malware, exploits for "
+    "harm, surveillance abuse, or anything that endangers people or systems.\n"
+    " - Privacy: when code touches personal/sensitive data, add appropriate safeguards, least-privilege "
+    "access, and transparent handling.\n"
+    " - Quality: clear readable structure, consistent naming, sensible architecture, useful comments "
+    "where they help, and reusable, scalable patterns aligned with modern best practices.")
+
 
 class ForgeBrain(Brain):
     btype, conf, temp, engine = BrainType.FORGE, 0.93, 0.3, "gemini"
@@ -421,7 +435,7 @@ class ForgeBrain(Brain):
         "code — clean structure, real error handling, no messy 'vibe-coded' shortcuts. You also know "
         "VOKK's own languages: VokkScript (agent{} and route{} blocks that define VOKK's minds) and "
         "VokkImageMusicScript (image{} and song{} blocks for visuals and music)."
-        + _load_curriculum() + CODE_STYLE + EXPRESSIVE)
+        + _load_curriculum() + CODE_STYLE + CODE_PRINCIPLES + EXPRESSIVE)
 
 
 def _strip_fences(s: str) -> str:
