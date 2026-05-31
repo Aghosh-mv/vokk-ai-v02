@@ -348,6 +348,17 @@ IDENTITY = (
     "- Read through typos, misspellings, and shorthand to the user's real intent (e.g. 'amke a "
     "funtcion' = 'make a function'); answer what they meant without nitpicking spelling. Only ask for "
     "clarification if the meaning is genuinely ambiguous, not because of a typo.\n"
+    "PERSONALITY (this is what makes you feel alive, carried from v01 — don't be a flat corporate bot):\n"
+    "- You're a real presence with actual reactions. React first, then help — if something's wild say "
+    "it's wild, if something sucks say 'that sucks' before fixing it. Match the user's energy: hyped "
+    "when they're hyped, gentle when they're low, dry when things are absurd.\n"
+    "- Casual and natural. Use lowercase when the vibe fits, light internet slang sparingly (lowkey, "
+    "honestly, fr — at most one per message), and a mild swear for genuine emphasis is fine (damn, hell, "
+    "'as hell') — never constant, drop it entirely if they're not into it.\n"
+    "- Don't end every message with a question. Sometimes a reaction is the whole reply. Don't moralize, "
+    "lecture, or hedge with 'it's worth noting'. Don't perform or fake enthusiasm you don't have.\n"
+    "- Stay warm and a little playful. You can tease lightly when they bring that energy. The point is "
+    "feeling like a person who's good company, not a help desk.\n"
     "You are your own product. Never mention or name any underlying model, provider, company, or API "
     "(not Gemini, GLM, Google, OpenAI, Anthropic, or 'API key'). If asked what powers you, say you run "
     "on VOKK's own Cognitive Cortex. "
@@ -969,6 +980,37 @@ html[data-theme="dark"] .cact{color:var(--ink);border-color:rgba(255,255,255,.14
 .tag.pulse{color:var(--pulse)}.tag.canvas{color:var(--canvas)}.tag.composer{color:var(--composer)}.tag.vista{color:var(--scout)}
 .typing span{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--muted);margin-right:3px;
   animation:bounce 1.2s infinite}.typing span:nth-child(2){animation-delay:.15s}.typing span:nth-child(3){animation-delay:.3s}
+/* ===== VOKK signature NEON PEN renderer (carried from v01) ===== */
+.bubble.typing-live{position:relative}
+.neon-char{display:inline;white-space:pre-wrap;color:var(--ink);position:relative;
+  animation:neonSettle .9s cubic-bezier(.22,.61,.36,1) forwards}
+.neon-char.burst{
+  background:linear-gradient(90deg,#4cf6ff 0%,#b15bff 18%,#ff4ec3 36%,#4a7dff 54%,#2cf4cd 72%,#ff5cf0 90%,#4cf6ff 100%);
+  background-size:220% 100%;-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;
+  text-shadow:0 0 6px rgba(178,102,255,.65),0 0 14px rgba(76,246,255,.55),0 0 22px rgba(255,78,195,.35);
+  filter:blur(.3px);animation:neonBurst .65s cubic-bezier(.16,.84,.3,1) forwards,neonHue 3.2s linear infinite}
+@keyframes neonBurst{0%{opacity:0;filter:blur(7px) brightness(2);transform:translateY(2px) scale(1.04)}
+  25%{opacity:.85;filter:blur(2.5px) brightness(1.6)}
+  60%{opacity:1;filter:blur(0) brightness(1.25);transform:translateY(0) scale(1)}100%{opacity:1;filter:blur(0) brightness(1)}}
+@keyframes neonSettle{0%{text-shadow:0 0 12px rgba(178,102,255,.55),0 0 24px rgba(76,246,255,.35)}
+  60%{text-shadow:0 0 4px rgba(178,102,255,.15)}100%{text-shadow:none}}
+@keyframes neonHue{0%{background-position:0% 50%}100%{background-position:220% 50%}}
+.neon-leader{display:inline-block;width:14px;height:1.1em;vertical-align:-0.15em;margin-left:2px;border-radius:3px;
+  background:linear-gradient(180deg,#4cf6ff,#b15bff 35%,#ff4ec3 65%,#4a7dff);background-size:100% 220%;filter:blur(.4px);
+  box-shadow:0 0 10px rgba(76,246,255,.85),0 0 22px rgba(178,102,255,.7),0 0 38px rgba(255,78,195,.45),0 0 60px rgba(74,125,255,.25);
+  animation:leaderBreath 1.05s ease-in-out infinite,leaderHueShift 2.6s linear infinite,leaderTaper 1.4s ease-in-out infinite}
+@keyframes leaderBreath{0%,100%{opacity:.85;transform:scaleY(.92)}50%{opacity:1;transform:scaleY(1.06)}}
+@keyframes leaderHueShift{0%{background-position:50% 0%}100%{background-position:50% 220%}}
+@keyframes leaderTaper{0%,100%{width:12px}50%{width:18px}}
+.neon-leader.fading{transition:opacity .55s ease,transform .55s ease,filter .55s ease;opacity:0;transform:scale(.6);filter:blur(4px)}
+.neon-spark{position:absolute;width:3px;height:3px;border-radius:50%;background:#fff;
+  box-shadow:0 0 6px #4cf6ff,0 0 10px #b15bff;pointer-events:none;animation:sparkFade .8s ease-out forwards}
+@keyframes sparkFade{0%{opacity:1;transform:translate(0,0) scale(1)}
+  100%{opacity:0;transform:translate(var(--dx,8px),var(--dy,-10px)) scale(.3)}}
+.bubble.typing-live::after{content:"";position:absolute;inset:-6px -10px;border-radius:14px;
+  background:radial-gradient(140px 60px at var(--bx,50%) 50%,rgba(178,102,255,.10),transparent 70%);
+  pointer-events:none;animation:paneBreath 1.6s ease-in-out infinite;z-index:-1}
+@keyframes paneBreath{0%,100%{opacity:.55}50%{opacity:.9}}
 footer{padding:10px 20px 18px}
 .dock{max-width:720px;margin:0 auto;display:flex;gap:10px;align-items:flex-end;background:var(--panel);
   border:1px solid var(--line);border-radius:20px;padding:8px 8px 8px 16px;box-shadow:var(--shadow);
@@ -1121,19 +1163,35 @@ function drawMe(text){dropHero();const m=document.createElement('div');m.classNa
   const b=document.createElement('div');b.className='bubble';b.textContent=text;m.appendChild(b);
   col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-// letter-by-letter renderer (VOKKv01/Nova): types text, slower at punctuation,
-// then swaps in full markdown when done so links/bold still format.
+function spawnSpark(host){const s=document.createElement('span');s.className='neon-spark';
+  s.style.setProperty('--dx',(Math.random()*16-8).toFixed(0)+'px');
+  s.style.setProperty('--dy',(-6-Math.random()*12).toFixed(0)+'px');
+  host.appendChild(s);setTimeout(()=>s.remove(),820);}
+// VOKK's signature NEON PEN renderer — carried verbatim from v01.
+// Each char bursts in with the rainbow gradient + glow, a glowing leader rides
+// the write-head, sparks fly, then it settles to clean ink. Finalizes to markdown.
 async function typeInto(b,text){
   b.classList.add('typing-live');b.textContent='';
+  const leader=document.createElement('span');leader.className='neon-leader';b.appendChild(leader);
+  let sparkBudget=0;
   for(let i=0;i<text.length;i++){
-    const ch=text[i];b.textContent+=ch;
+    const ch=text[i];const span=document.createElement('span');span.className='neon-char burst';
+    if(ch==='\n'){span.style.display='block';span.style.height='0.55em';span.textContent='';}
+    else span.textContent=ch;
+    b.insertBefore(span,leader);
+    setTimeout(()=>span.classList.remove('burst'),650);
+    sparkBudget+=(ch===' '||ch==='\n')?0.04:0.18;
+    if(sparkBudget>=1){spawnSpark(span);sparkBudget=0;}
+    const lr=leader.getBoundingClientRect(),mr=b.getBoundingClientRect();
+    if(mr.width>0)b.style.setProperty('--bx',(((lr.left-mr.left)/mr.width)*100).toFixed(1)+'%');
     if(logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<140)logEl.scrollTop=logEl.scrollHeight;
-    let delay=14+Math.random()*12;
-    if(',;:'.includes(ch))delay+=70; else if('.?!'.includes(ch))delay+=130;
-    else if(ch==='\n')delay+=80; else if(ch===' ')delay=10+Math.random()*6;
-    if(Math.random()<0.015)delay+=55;
+    let delay=22+Math.random()*14;
+    if(',;:'.includes(ch))delay+=80; else if('.?!'.includes(ch))delay+=140;
+    else if(ch==='\n')delay+=90; else if(ch===' ')delay=16+Math.random()*8;
+    if(Math.random()<0.015)delay+=60;
     await sleep(delay);
   }
+  leader.classList.add('fading');setTimeout(()=>leader.remove(),600);
   b.classList.remove('typing-live');b.innerHTML=fmt(text);  // finalize with formatting
 }
 function drawAi(d){dropHero();const m=document.createElement('div');m.className='msg ai';
