@@ -1164,6 +1164,11 @@ function fmt(t){
 function dropHero(){const h=$('hero');if(h)h.remove();}
 function drawMe(text){dropHero();const m=document.createElement('div');m.className='msg me';
   const b=document.createElement('div');b.className='bubble';b.textContent=text;m.appendChild(b);
+  // click your own message to edit & resend it
+  b.title='click to edit & resend';b.style.cursor='pointer';
+  b.onclick=()=>{box.value=text;box.focus();box.style.height='28px';
+    box.style.height=Math.min(box.scrollHeight,160)+'px';
+    box.scrollIntoView({behavior:'smooth',block:'center'});};
   col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 function spawnSpark(host){const s=document.createElement('span');s.className='neon-spark';
