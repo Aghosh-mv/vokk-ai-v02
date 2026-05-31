@@ -1037,6 +1037,9 @@ html[data-theme="dark"] .thinkbox{background:rgba(255,255,255,.04)}
   opacity:.78;font-style:italic}                       /* soft white thinking text */
 html[data-theme="light"] .thinkbody{color:#6b6557}
 .timing{font-size:11px;color:var(--muted)}
+.metaact{background:transparent;border:1px solid var(--line);color:var(--muted);border-radius:7px;
+  font-size:11px;padding:2px 8px;cursor:pointer;transition:all .15s}
+.metaact:hover{color:var(--ink);border-color:var(--muted);background:var(--hover)}
 @keyframes fadeup{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 @keyframes fadein{from{opacity:0}to{opacity:1}}
 @keyframes slidein{from{opacity:0;transform:translateX(-8px)}to{opacity:1;transform:none}}
@@ -1230,6 +1233,12 @@ function drawAi(d){dropHero();const m=document.createElement('div');m.className=
   meta.innerHTML=`<span class="tag ${t}">${(t||'').toUpperCase()}</span><span>${esc(d.routing_reasoning||'')}</span>`+
     `<span class="timing">${timing}</span>`+(d.live?'':'<span>⚠ mock</span>')+
     (d.verified?'<span>✓ verified</span>':'')+`<span>audit ${d.audit_hash}</span>`;
+  // copy + regenerate actions
+  const cp=document.createElement('button');cp.className='metaact';cp.textContent='⧉ copy';
+  cp.onclick=()=>navigator.clipboard.writeText(d.response||'').then(()=>{cp.textContent='copied ✓';
+    setTimeout(()=>cp.textContent='⧉ copy',1200);});meta.appendChild(cp);
+  if(d.__lastq){const rg=document.createElement('button');rg.className='metaact';rg.textContent='↻ regenerate';
+    rg.onclick=()=>{box.value=d.__lastq;ask();};meta.appendChild(rg);}
   m.appendChild(meta);col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 
 /* status */
@@ -1286,7 +1295,7 @@ async function ask(){const q=box.value.trim();if(!q)return;box.value='';box.styl
     body:JSON.stringify({prompt:q,mode:mode})});const d=await r.json();clearInterval(tick);
     const cc=convs.find(x=>x.id===reqId);if(cc)cc.msgs.push({who:'ai',data:d});save();renderList();
     // only render into the view if the user is STILL in the session that asked
-    if(curId===reqId){tm.remove();d.__type=true;drawAi(d);
+    d.__lastq=q;if(curId===reqId){tm.remove();d.__type=true;drawAi(d);
       if(d.score&&d.score.length)playScore(d.score,d.score[0]&&d.score[0].wave);}
   }catch(e){clearInterval(tick);if(curId===reqId){tm.remove();drawAi({error:''+e});}}
   finally{send.disabled=false;box.focus();}}
