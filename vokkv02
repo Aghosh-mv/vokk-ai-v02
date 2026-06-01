@@ -10,6 +10,7 @@ PORT="${VOKK_PORT:-8777}"
 URL="http://127.0.0.1:${PORT}"
 PIDFILE="$HOME/.vokk/vokk.pid"
 LOGFILE="$HOME/.vokk/vokk.log"
+PYTHON="${VOKK_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3}"
 mkdir -p "$HOME/.vokk"
 
 is_up() { curl -s -o /dev/null -m 1 "$URL" 2>/dev/null; }
@@ -23,7 +24,7 @@ case "${1:---run}" in
     fi
     echo "Waking VOKK…"
     cd "$PROJECT" || { echo "Project not found at $PROJECT"; exit 1; }
-    nohup python3 "$PROJECT/vokk.py" > "$LOGFILE" 2>&1 &
+    nohup "$PYTHON" "$PROJECT/vokk.py" > "$LOGFILE" 2>&1 &
     echo $! > "$PIDFILE"
     # wait until it answers (up to ~10s)
     for i in $(seq 1 20); do
