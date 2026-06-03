@@ -55,8 +55,15 @@ agent Vista {
     role "paints atmospheric scenes by writing VokkScript scene code, rendered to pixels."
 }
 
+agent Chroma {
+    kind chroma
+    confidence 0.94
+    role "writes Chromacant, VOKK's synesthetic wave language where one program compiles into both visuals and sound."
+}
+
 # Routing: task_class -> mind. The Hybrid Intelligence Router reads this.
 route Intelligence {
+    chroma   -> Chroma
     music    -> Composer
     scene    -> Vista
     image    -> Canvas

@@ -15,8 +15,16 @@ dreamy, textured, photographic in feel (not clip-art, not a literal photo).
 scene grammar:
     scene NAME {
         size W H
+        seed N                       # optional deterministic variation
         sky  #top #bottom            # vertical gradient fill (the base light)
         band y0 y1 #color [soft S]   # horizontal field (horizon/ground/water), soft edge
+        ridge y amp rough #color [soft S] [seed N]   # mountain / dune / treeline silhouette
+        cloud cx cy rx ry #color [opacity O] [blur B] # soft elliptical cloud mass
+        water y #top #bottom [reflect R] [ripple P]   # water gradient with reflected sky/light
+        cityline y #color [density D] [maxh H] [glow G] # skyline silhouette + sparse window glow
+        stars amount [#color] [size S]   # night-sky star field
+        rain amount [angle A] [len L] [#color]   # diagonal rain streaks
+        snow amount [size S] [#color]             # drifting snow flecks
         glow cx cy radius #color [intensity I]   # radial light source / bloom
         sun  cx cy radius #color     # bright core + halo (shorthand glow)
         fog  amount [#tint]          # value-noise haze, 0..1
@@ -51,6 +59,11 @@ def _lerp(a, b, t):
 
 def _clamp8(v):
     return 0 if v < 0 else 255 if v > 255 else int(v)
+
+
+def _blend(a: float, b: float, t: float) -> float:
+    t = 0.0 if t < 0 else 1.0 if t > 1 else t
+    return a + (b - a) * t
 
 
 # ── value noise (hash lattice + bilinear), deterministic, no deps ───────────
@@ -98,7 +111,7 @@ def _png(width: int, height: int, rgb: bytearray) -> bytes:
 
 # ── parse a scene block into IR-ish op list ─────────────────────────────────
 def parse_scene(name: str, body: str) -> Dict[str, Any]:
-    scene = {"name": name, "w": 640, "h": 480, "ops": []}
+    scene = {"name": name, "w": 640, "h": 480, "seed": None, "ops": []}
     for raw in body.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") and not re.match(r"#\w", line):
@@ -113,6 +126,11 @@ def parse_scene(name: str, body: str) -> Dict[str, Any]:
         cmd = t[0].lower()
         if cmd == "size" and len(t) >= 3:
             scene["w"], scene["h"] = int(float(t[1])), int(float(t[2]))
+        elif cmd == "seed" and len(t) >= 2:
+            try:
+                scene["seed"] = int(float(t[1]))
+            except Exception:
+                pass
         else:
             scene["ops"].append(t)
     # clamp size for speed/safety
@@ -131,7 +149,7 @@ def _num(t, i, default=0.0):
 # ── the renderer: scene -> RGB pixel buffer -> PNG base64 ───────────────────
 def render_scene(scene: Dict[str, Any]) -> Dict[str, Any]:
     w, h, ops = scene["w"], scene["h"], scene["ops"]
-    seed = (abs(hash(scene["name"])) % 9999) + 1
+    seed = scene.get("seed") or ((abs(hash(scene["name"])) % 9999) + 1)
 
     # accumulate as float RGB planes
     R = [0.0] * (w * h); G = [0.0] * (w * h); B = [0.0] * (w * h)
@@ -166,6 +184,123 @@ def render_scene(scene: Dict[str, Any]) -> Dict[str, Any]:
                     R[idx] = _lerp(R[idx], col[0], a)
                     G[idx] = _lerp(G[idx], col[1], a)
                     B[idx] = _lerp(B[idx], col[2], a)
+        elif cmd == "ridge" and len(t) >= 5:
+            base_y = _num(t, 1); amp = max(2.0, _num(t, 2)); rough = max(0.2, _num(t, 3))
+            col = _hex(t[4]); soft = _num(t, t.index("soft") + 1) if "soft" in t else 10.0
+            layer_seed = int(_num(t, t.index("seed") + 1, seed + 17)) if "seed" in t else seed + 17
+            scale = rough / max(160.0, w * 0.42)
+            heights = [base_y - amp * (0.12 + 0.88 * _fbm(x * scale, layer_seed * 0.013, layer_seed, 5)) for x in range(w)]
+            for x in range(w):
+                ridge_y = heights[x]
+                ys = max(0, int(ridge_y - soft * 1.8))
+                for y in range(ys, h):
+                    idx = y * w + x
+                    if y < ridge_y:
+                        a = max(0.0, 1.0 - ((ridge_y - y) / max(1.0, soft)))
+                        a *= 0.7
+                    else:
+                        a = 1.0
+                    haze = 0.92 + 0.08 * _fbm(x * 0.02, y * 0.02, layer_seed + 9, 3)
+                    R[idx] = _lerp(R[idx], col[0] * haze, a)
+                    G[idx] = _lerp(G[idx], col[1] * haze, a)
+                    B[idx] = _lerp(B[idx], col[2] * haze, a)
+        elif cmd == "cloud" and len(t) >= 6:
+            cx, cy, rx, ry = _num(t, 1), _num(t, 2), max(8.0, _num(t, 3)), max(5.0, _num(t, 4))
+            col = _hex(t[5]); opacity = _num(t, t.index("opacity") + 1) if "opacity" in t else 0.42
+            blur = max(0.5, _num(t, t.index("blur") + 1)) if "blur" in t else 18.0
+            xs, xe = max(0, int(cx - rx - blur * 2)), min(w, int(cx + rx + blur * 2))
+            ys, ye = max(0, int(cy - ry - blur * 2)), min(h, int(cy + ry + blur * 2))
+            for y in range(ys, ye):
+                base = y * w
+                ny = (y - cy) / max(1.0, ry)
+                for x in range(xs, xe):
+                    nx = (x - cx) / max(1.0, rx)
+                    d = nx * nx + ny * ny
+                    if d > 4.0:
+                        continue
+                    edge = math.exp(-d * (1.3 + blur * 0.01)) * opacity
+                    puff = 0.75 + 0.35 * _fbm(x * 0.03, y * 0.03, seed + 31, 4)
+                    a = edge * puff
+                    idx = base + x
+                    R[idx] = _lerp(R[idx], col[0], a)
+                    G[idx] = _lerp(G[idx], col[1], a)
+                    B[idx] = _lerp(B[idx], col[2], a)
+        elif cmd == "water" and len(t) >= 4:
+            horizon = max(0, min(h - 1, int(_num(t, 1))))
+            topc, botc = _hex(t[2]), _hex(t[3])
+            reflect = _num(t, t.index("reflect") + 1) if "reflect" in t else 0.42
+            ripple = _num(t, t.index("ripple") + 1) if "ripple" in t else 0.06
+            for y in range(horizon, h):
+                ty = (y - horizon) / max(1, h - horizon - 1)
+                base = y * w
+                for x in range(w):
+                    idx = base + x
+                    wave = math.sin((x * 0.045) + (y - horizon) * 0.08 + seed * 0.1) * ripple
+                    r = _lerp(topc[0], botc[0], min(1.0, max(0.0, ty + wave)))
+                    g = _lerp(topc[1], botc[1], min(1.0, max(0.0, ty + wave)))
+                    b = _lerp(topc[2], botc[2], min(1.0, max(0.0, ty + wave)))
+                    R[idx] = _lerp(R[idx], r, 0.72)
+                    G[idx] = _lerp(G[idx], g, 0.72)
+                    B[idx] = _lerp(B[idx], b, 0.72)
+                    if reflect > 0:
+                        yy = max(0, min(h - 1, horizon - int((y - horizon) * (0.75 + 0.25 * _fbm(x * 0.02, y * 0.02, seed + 5, 2)))))
+                        src = yy * w + min(w - 1, max(0, x + int(math.sin(y * 0.08 + seed) * 2)))
+                        shimmer = 0.7 + 0.3 * math.sin((x + seed) * 0.12 + ty * 18.0)
+                        a = reflect * (1.0 - ty) * shimmer
+                        R[idx] = _lerp(R[idx], R[src], a)
+                        G[idx] = _lerp(G[idx], G[src], a)
+                        B[idx] = _lerp(B[idx], B[src], a)
+        elif cmd == "cityline" and len(t) >= 3:
+            base_y = max(0, min(h - 1, int(_num(t, 1)))); col = _hex(t[2])
+            density = _num(t, t.index("density") + 1) if "density" in t else 0.72
+            maxh = max(24.0, _num(t, t.index("maxh") + 1)) if "maxh" in t else h * 0.24
+            glow = _num(t, t.index("glow") + 1) if "glow" in t else 0.18
+            x = 0
+            while x < w:
+                bw = max(3, int(3 + _h2(x, base_y, seed + 23) * 16))
+                if _h2(x + 17, base_y + 9, seed + 29) > density:
+                    x += bw
+                    continue
+                bh = int(10 + _h2(x + 3, base_y + 7, seed + 19) * maxh)
+                for yy in range(max(0, base_y - bh), base_y):
+                    row = yy * w
+                    for xx in range(x, min(w, x + bw)):
+                        idx = row + xx
+                        depth = 0.92 + 0.08 * ((yy - (base_y - bh)) / max(1, bh))
+                        R[idx] = _lerp(R[idx], col[0] * depth, 0.96)
+                        G[idx] = _lerp(G[idx], col[1] * depth, 0.96)
+                        B[idx] = _lerp(B[idx], col[2] * depth, 0.96)
+                        if glow > 0 and ((xx - x) % 3 == 1) and ((base_y - yy) % 7 == 2) and _h2(xx, yy, seed + 41) > 0.68:
+                            wcol = (255, 216, 146)
+                            a = glow * (0.5 + 0.5 * _h2(xx, yy, seed + 43))
+                            R[idx] = _lerp(R[idx], wcol[0], a)
+                            G[idx] = _lerp(G[idx], wcol[1], a)
+                            B[idx] = _lerp(B[idx], wcol[2], a)
+                x += bw
+        elif cmd == "stars" and len(t) >= 2:
+            amt = max(0.0, _num(t, 1)); col = _hex(t[2]) if len(t) >= 3 and t[2].startswith("#") else (235, 238, 255)
+            size = _num(t, t.index("size") + 1) if "size" in t else 1.4
+            count = int(max(12, min(1600, w * h * 0.00032 * (0.35 + amt))))
+            for i in range(count):
+                sx = int(_h2(i, seed, seed + 47) * (w - 1))
+                sy = int((_h2(i, seed + 11, seed + 53) ** 1.8) * max(1, h * 0.6))
+                glow = 0.55 + _h2(i, seed + 17, seed + 59)
+                rad = 1 if size < 1.5 else 2
+                for oy in range(-rad, rad + 1):
+                    yy = sy + oy
+                    if yy < 0 or yy >= h:
+                        continue
+                    row = yy * w
+                    for ox in range(-rad, rad + 1):
+                        xx = sx + ox
+                        if xx < 0 or xx >= w:
+                            continue
+                        d2 = ox * ox + oy * oy
+                        a = math.exp(-d2 / max(0.8, size)) * glow
+                        idx = row + xx
+                        R[idx] += col[0] * a * 0.9
+                        G[idx] += col[1] * a * 0.9
+                        B[idx] += col[2] * a
         elif cmd in ("glow", "sun") and len(t) >= 5:
             cx, cy, rad = _num(t, 1), _num(t, 2), max(1.0, _num(t, 3))
             col = _hex(t[4])
@@ -215,6 +350,47 @@ def render_scene(scene: Dict[str, Any]) -> Dict[str, Any]:
                     R[idx] = _lerp(R[idx], tint[0], a)
                     G[idx] = _lerp(G[idx], tint[1], a)
                     B[idx] = _lerp(B[idx], tint[2], a)
+        elif cmd == "rain" and len(t) >= 2:
+            amt = max(0.0, _num(t, 1)); angle = math.radians(_num(t, t.index("angle") + 1)) if "angle" in t else math.radians(-18)
+            length = max(6, int(_num(t, t.index("len") + 1))) if "len" in t else 18
+            col = next((_hex(tok) for tok in t[2:] if tok.startswith("#")), (196, 210, 228))
+            count = int(max(40, min(6000, w * h * 0.00055 * (0.25 + amt))))
+            dx = math.cos(angle) * length; dy = math.sin(angle) * length
+            for i in range(count):
+                x0 = int(_h2(i, seed + 61, seed + 67) * (w - 1))
+                y0 = int(_h2(i, seed + 71, seed + 73) * (h - 1))
+                for s in range(length):
+                    xx = int(x0 + dx * (s / max(1, length - 1)))
+                    yy = int(y0 + dy * (s / max(1, length - 1)))
+                    if 0 <= xx < w and 0 <= yy < h:
+                        idx = yy * w + xx
+                        a = (1.0 - s / max(1, length)) * 0.35
+                        R[idx] = _lerp(R[idx], col[0], a)
+                        G[idx] = _lerp(G[idx], col[1], a)
+                        B[idx] = _lerp(B[idx], col[2], a)
+        elif cmd == "snow" and len(t) >= 2:
+            amt = max(0.0, _num(t, 1)); size = _num(t, t.index("size") + 1) if "size" in t else 1.8
+            col = next((_hex(tok) for tok in t[2:] if tok.startswith("#")), (245, 247, 255))
+            count = int(max(20, min(5000, w * h * 0.00022 * (0.35 + amt))))
+            rad = 1 if size < 1.8 else 2
+            for i in range(count):
+                sx = int(_h2(i, seed + 79, seed + 83) * (w - 1))
+                sy = int(_h2(i, seed + 89, seed + 97) * (h - 1))
+                glow = 0.35 + 0.65 * _h2(i, seed + 101, seed + 103)
+                for oy in range(-rad, rad + 1):
+                    yy = sy + oy
+                    if yy < 0 or yy >= h:
+                        continue
+                    row = yy * w
+                    for ox in range(-rad, rad + 1):
+                        xx = sx + ox
+                        if xx < 0 or xx >= w:
+                            continue
+                        a = math.exp(-(ox * ox + oy * oy) / max(0.8, size)) * glow * 0.7
+                        idx = row + xx
+                        R[idx] = _lerp(R[idx], col[0], a)
+                        G[idx] = _lerp(G[idx], col[1], a)
+                        B[idx] = _lerp(B[idx], col[2], a)
 
     # post: vignette + grain (single pass)
     vig = 0.0; grain = 0.0
