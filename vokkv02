@@ -4,18 +4,25 @@
 #   vokkv02 --run     wake VOKK (starts the server, opens the browser)
 #   vokkv02 --stop    put VOKK to sleep (stops the server)
 #   vokkv02 --status  check if VOKK is awake
+#   vokkv02 --public-run     wake VOKK and start a public localhost.run tunnel
+#   vokkv02 --public-stop    stop the public tunnel
+#   vokkv02 --public-status  print the current public URL if available
 
 PROJECT="/Users/tinkerspace/vokk-project"
 PORT="${VOKK_PORT:-8777}"
 URL="http://127.0.0.1:${PORT}"
 PIDFILE="$HOME/.vokk/vokk.pid"
 LOGFILE="$HOME/.vokk/vokk.log"
+PUBLIC_LOGFILE="$HOME/.vokk/localhostrun.log"
+PUBLIC_URL_FILE="$HOME/.vokk/public_url.txt"
+TMUX_BIN="${TMUX_BIN:-/opt/homebrew/bin/tmux}"
 PYTHON="${VOKK_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3}"
 PLIST="$HOME/Library/LaunchAgents/com.vokk.v02.plist"
 mkdir -p "$HOME/.vokk"
 mkdir -p "$HOME/Library/LaunchAgents"
 
 is_up() { curl -s -o /dev/null -m 1 "$URL" 2>/dev/null; }
+public_url() { grep -Eo 'https://[a-z0-9.-]+\.lhr\.life' "$PUBLIC_LOGFILE" | tail -n 1; }
 
 case "${1:---run}" in
   --run|run|"")
@@ -81,12 +88,51 @@ PLIST
   --status|status)
     if is_up; then echo "VOKK is awake at $URL"; else echo "VOKK is asleep."; fi
     ;;
+  --public-run|public-run)
+    "$0" --run >/dev/null 2>&1 || exit 1
+    if [ ! -x "$TMUX_BIN" ]; then
+      echo "tmux not found at $TMUX_BIN"
+      exit 1
+    fi
+    rm -f "$PUBLIC_LOGFILE" "$PUBLIC_URL_FILE"
+    "$TMUX_BIN" kill-session -t vokk_tunnel >/dev/null 2>&1 || true
+    "$TMUX_BIN" new-session -d -s vokk_tunnel "sh -lc 'ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:${PORT} nokey@localhost.run 2>&1 | tee \"$PUBLIC_LOGFILE\"'"
+    for i in $(seq 1 24); do
+      U="$(public_url)"
+      if [ -n "$U" ]; then
+        printf '%s\n' "$U" > "$PUBLIC_URL_FILE"
+        echo "VOKK public URL → $U"
+        open "$U" 2>/dev/null
+        exit 0
+      fi
+      sleep 1
+    done
+    echo "Public tunnel did not report a URL in time."
+    tail -n 20 "$PUBLIC_LOGFILE" 2>/dev/null
+    exit 1
+    ;;
+  --public-stop|public-stop)
+    if [ -x "$TMUX_BIN" ]; then
+      "$TMUX_BIN" kill-session -t vokk_tunnel >/dev/null 2>&1 || true
+    fi
+    pkill -f '[l]ocalhost\.run' >/dev/null 2>&1 || true
+    rm -f "$PUBLIC_URL_FILE"
+    echo "VOKK public tunnel stopped."
+    ;;
+  --public-status|public-status)
+    U="$(cat "$PUBLIC_URL_FILE" 2>/dev/null)"
+    if [ -n "$U" ]; then
+      echo "VOKK public URL: $U"
+    else
+      echo "No saved public URL."
+    fi
+    ;;
   -h|--help|help)
-    echo "vokkv02 --run | --stop | --status"
+    echo "vokkv02 --run | --stop | --status | --public-run | --public-stop | --public-status"
     ;;
   *)
     echo "Unknown option: $1"
-    echo "vokkv02 --run | --stop | --status"
+    echo "vokkv02 --run | --stop | --status | --public-run | --public-stop | --public-status"
     exit 1
     ;;
 esac

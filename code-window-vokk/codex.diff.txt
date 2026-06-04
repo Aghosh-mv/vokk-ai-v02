@@ -1,0 +1,372 @@
+diff --git a/vokk.py b/vokk.py
+index ec6f91f..041ee05 100644
+--- a/vokk.py
++++ b/vokk.py
+@@ -51,6 +51,8 @@ from vokk_raster import run_scenes
+ from vokk_chromacant import run_chromacant
+ # VOKK SurfaceScript — interface{} and world3d{} compiled to browser previews.
+ from vokk_surface import run_surface
++from vokk_cognitive import CognitiveWorkflow
++from vokk_compiler_host import VokkCompilerHost
+ 
+ HOST = os.environ.get("VOKK_HOST", "127.0.0.1")
+ PORT = int(os.environ.get("VOKK_PORT", "8777"))
+@@ -101,6 +103,8 @@ GLM_KEY = _key("GLM_API_KEY")
+ SERPAPI_KEY = _key("SERPAPI_KEY") or _key("SERP_API_KEY") or _key("SERPAPI_API_KEY")
+ API_KEY = GEMINI_KEY  # back-compat alias; "live" overall if any provider has a key
+ HAVE_ANY_KEY = bool(GEMINI_KEY or GLM_KEY)
++COGNITIVE = CognitiveWorkflow()
++COMPILER_HOST = VokkCompilerHost()
+ 
+ AUTH_DB = Path("~/.vokk/vokkv02_auth.db").expanduser()
+ AUTH_DB.parent.mkdir(parents=True, exist_ok=True)
+@@ -442,6 +446,7 @@ class BrainResponse:
+     verified: bool = False
+     audit_hash: str = ""
+     live: bool = False
++    recovered: bool = False
+ 
+ 
+ # ─────────────────────────────────────────────────────────────────────────
+@@ -1701,7 +1706,7 @@ class CortexRouter:
+         "answer yet — only the thinking.")
+ 
+     DEBATE_SYS = (
+-        "Run a bounded internal self-debate about the user's request. Output three short sections only: "
++        "Run an internal review pass about the user's request. Output three short sections only: "
+         "PLAN_A, PLAN_B, SYNTHESIS. PLAN_A argues for the direct approach. PLAN_B challenges weak assumptions, "
+         "missing evidence, or hidden risks. SYNTHESIS merges the strongest parts honestly. Keep it concise."
+     )
+@@ -1721,7 +1726,7 @@ class CortexRouter:
+         return {"thinking": thinking, "think_ms": round((time.time() - tt) * 1000, 1)}
+ 
+     def _self_resurrect(self, prompt: str, thinking: Optional[str], d: BrainDecision) -> Optional[BrainResponse]:
+-        """Bounded recovery path. Honest fallback, not magic."""
++        """Recovery path after a failed first pass."""
+         rescue_prompt = (
+             f"{prompt}\n\n[Recovery mode]\nThe first generation path failed. Rebuild a shorter, sturdier answer. "
+             "State uncertainty plainly instead of inventing detail."
+@@ -1733,7 +1738,7 @@ class CortexRouter:
+                 continue
+             try:
+                 resp = self.brains[bt].generate(rescue_prompt)
+-                resp.content += "\n\n[[whisper]]Recovery note: VOKK rebuilt this through a fallback path after the first answer path failed.[[/whisper]]"
++                resp.recovered = True
+                 return resp
+             except Exception:
+                 continue
+@@ -1779,7 +1784,7 @@ class CortexRouter:
+                               "Model preset Agent: Scout runs BigNice goal→plan→execute→reflect flow", [BrainType.CORE])
+             preset_reason = "agent"
+         elif model_preset in {"web", "scrapegraph", "graphrag", "graph_rag", "selfrag", "self_rag", "agenticrag", "agentic_rag", "reasoning"}:
+-            primary = BrainType.SWIFT if model_preset in {"web", "graphrag", "graph_rag", "selfrag", "self_rag"} else BrainType.PULSE
++            primary = BrainType.SWIFT if model_preset in {"web", "graphrag", "graph_rag", "selfrag", "self_rag"} else (BrainType.SCOUT if model_preset in {"agenticrag", "agentic_rag"} else BrainType.PULSE)
+             d = BrainDecision(primary, None if model_preset == "web" else BrainType.CORE, 0.95,
+                               f"Model preset {model_preset}: retrieval-first path with minimal answer scripting", [BrainType.CORE])
+             preset_reason = model_preset
+@@ -1828,7 +1833,7 @@ class CortexRouter:
+             try:
+                 debate = _call_engine(self.brains[d.primary].engine, prompt, self.DEBATE_SYS, 0.45)
+                 if debate:
+-                    gen_prompt += "\n\n[Bounded self-debate]\n" + debate[:2500] + "\nUse the SYNTHESIS direction. Be honest about unresolved gaps."
++                    gen_prompt += "\n\n[Internal review]\n" + debate[:2500] + "\nUse the SYNTHESIS direction. Be honest about unresolved gaps."
+             except Exception:
+                 debate = None
+         try:
+@@ -1881,7 +1886,7 @@ class CortexRouter:
+             "verified": resp.verified,
+             "task_class": f.task_class.name,
+             "audit_hash": resp.audit_hash[:16],
+-            "self_resurrected": "[[whisper]]Recovery note:" in (resp.content or ""),
++            "self_resurrected": bool(getattr(resp, "recovered", False)),
+         }
+         if model_preset in {"vokkv02_lite", "v02_lite", "lite"}:
+             outbound = {"action": "allow", "category": "general", "confidence": 0.9}
+@@ -2297,6 +2302,38 @@ def _self_rag_context(prompt: str) -> Dict[str, Any]:
+     }
+ 
+ 
++def _agentic_rag_context(prompt: str) -> Dict[str, Any]:
++    plan = COGNITIVE.plan(prompt)
++    local = _self_rag_context(prompt)
++    web = _retrieval_context(prompt, "graphrag")
++    if web.get("status") in {"no_entrypoint", "graph_rag_empty"} and plan.get("focus_query") and plan.get("focus_query") != prompt:
++        web = _retrieval_context(str(plan["focus_query"]), "graphrag")
++    local_titles = [s.get("title", "") for s in (local.get("sources") or [])]
++    web_titles = [s.get("title", "") for s in (web.get("sources") or [])]
++    compare = COGNITIVE.compare_sources(local_titles, web_titles)
++    blocks = [
++        "[Agentic plan]\n"
++        + "\n".join(f"- {stage}" for stage in plan.get("stages", []))
++        + ("\n[Focus query]\n" + str(plan.get("focus_query")) if plan.get("focus_query") else "")
++    ]
++    if local.get("context"):
++        blocks.append("[Local SelfRAG]\n" + local["context"][:5000])
++    if web.get("context"):
++        blocks.append("[Graph retrieval]\n" + web["context"][:5000])
++    blocks.append(
++        "[Evidence comparison]\n"
++        + "Shared terms: " + (", ".join(compare["overlap"]) or "none")
++        + "\nLocal-only terms: " + (", ".join(compare["only_local"]) or "none")
++        + "\nWeb-only terms: " + (", ".join(compare["only_web"]) or "none")
++    )
++    merged_sources = (local.get("sources") or [])[:4] + (web.get("sources") or [])[:4]
++    return {
++        "context": "\n\n".join(blocks)[:12000],
++        "sources": merged_sources,
++        "status": "agentic_rag" if merged_sources or local.get("context") or web.get("context") else "agentic_rag_empty",
++    }
++
++
+ def _retrieval_context(prompt: str, preset: str) -> Dict[str, Any]:
+     preset = (preset or "").lower()
+     urls = _extract_urls(prompt)
+@@ -2335,18 +2372,7 @@ def _retrieval_context(prompt: str, preset: str) -> Dict[str, Any]:
+     if preset in {"selfrag", "self_rag"}:
+         return _self_rag_context(prompt)
+     if preset in {"agenticrag", "agentic_rag"}:
+-        local = _self_rag_context(prompt)
+-        web = _retrieval_context(prompt, "graphrag")
+-        blocks = []
+-        if local.get("context"):
+-            blocks.append("[Local SelfRAG]\n" + local["context"][:5000])
+-        if web.get("context"):
+-            blocks.append("[GraphRAG]\n" + web["context"][:5000])
+-        merged_sources = (local.get("sources") or [])[:4] + (web.get("sources") or [])[:4]
+-        status = "agentic_rag"
+-        if not blocks:
+-            status = "agentic_rag_empty"
+-        return {"context": "\n\n".join(blocks)[:12000], "sources": merged_sources, "status": status}
++        return _agentic_rag_context(prompt)
+     if preset == "web":
+         serp = _serp_lookup(prompt, timeout=3.0)
+         if serp:
+@@ -2436,7 +2462,7 @@ def _visible_trace(prompt: str, preset: str, retrieval: Optional[Dict[str, Any]]
+     if preset == "reasoning":
+         steps += [
+             {"title": "Multi-step answer", "content": "Structure the answer in clear steps instead of one jump-cut reply."},
+-            {"title": "Bounded self-debate", "content": "Run a short internal Plan A vs Plan B comparison, then answer from the synthesis."},
++            {"title": "Internal review", "content": "Run a short Plan A vs Plan B comparison, then answer from the synthesis."},
+         ]
+         branches = [
+             {"name": "Plan A", "summary": "Direct answer path."},
+@@ -2492,7 +2518,7 @@ def _training_pipeline(user_id: int, prompt: str) -> Dict[str, Any]:
+ 
+ def _self_code_summary() -> Dict[str, Any]:
+     root = Path(__file__).parent
+-    allow = ["vokk.py", "cortex.vokk", "vokk_chromacant.py", "vokk_imagemusic.py", "vokk_raster.py", "vokk_lang.py", "vokk_surface.py"]
++    allow = ["vokk.py", "cortex.vokk", "vokk_chromacant.py", "vokk_imagemusic.py", "vokk_raster.py", "vokk_lang.py", "vokk_surface.py", "vokk_world_runtime.js", "vokk_cognitive.py", "vokk_compiler_host.py"]
+     files = []
+     for name in allow:
+         p = root / name
+@@ -3485,9 +3511,9 @@ function setModelPreset(v){
+   if(modelPreset==='web')$('hint').textContent='Web mode uses SerpAPI if configured, or supplied URLs.';
+   if(modelPreset==='scrapegraph')$('hint').textContent='ScrapeGraph mode reads URLs you paste and extracts page text.';
+   if(modelPreset==='graphrag')$('hint').textContent='GraphRAG mode starts from search/URL entrypoints and follows a bounded source graph.';
+-  if(modelPreset==='agenticrag')$('hint').textContent='AgenticRAG plans retrieval, mixes local and web evidence, then states remaining gaps honestly.';
++  if(modelPreset==='agenticrag')$('hint').textContent='AgenticRAG runs a planner-led local-plus-web evidence workflow before answering.';
+   if(modelPreset==='selfrag')$('hint').textContent="SelfRAG searches VOKK's own files, summaries, and memory first.";
+-  if(modelPreset==='reasoning')$('hint').textContent='Reasoning mode uses multi-step answering and bounded self-debate before the final answer.';
++  if(modelPreset==='reasoning')$('hint').textContent='Reasoning mode uses multi-step answering and an internal review pass before the final answer.';
+ }
+ $('modelpreset').onchange=e=>setModelPreset(e.target.value);
+ setModelPreset(modelPreset);
+@@ -4112,6 +4138,9 @@ class Handler(BaseHTTPRequestHandler):
+         qs = urllib.parse.parse_qs(parsed.query)
+         if path in ("/", "/index.html"):
+             self._send(200, PAGE, "text/html; charset=utf-8")
++        elif path == "/vokk-runtime/world3d.js":
++            runtime = (Path(__file__).parent / "vokk_world_runtime.js").read_text(errors="ignore")
++            self._send(200, runtime, "application/javascript; charset=utf-8")
+         elif path == "/api/auth/me":
+             user = self._current_user()
+             self._json(200, {"ok": bool(user), "user": user})
+diff --git a/vokk_surface.py b/vokk_surface.py
+index 86a89ec..04701fe 100644
+--- a/vokk_surface.py
++++ b/vokk_surface.py
+@@ -232,97 +232,12 @@ def _compile_world3d(name: str, body: str) -> Dict[str, Any]:
+ </head>
+ <body>
+ <canvas id="c"></canvas>
+-<div class="hud">VOKK world3d · browser Three.js preview · orbit {'on' if spec['orbit'] else 'off'}</div>
++<div class="hud">VOKK world3d · VOKK scene spec + thin browser runtime · orbit {'on' if spec['orbit'] else 'off'}</div>
+ <script src="https://unpkg.com/three@0.164.1/build/three.min.js"></script>
+ <script src="https://unpkg.com/three@0.164.1/examples/js/controls/OrbitControls.js"></script>
++<script src="/vokk-runtime/world3d.js"></script>
+ <script>
+-const canvas=document.getElementById('c');
+-const renderer=new THREE.WebGLRenderer({{canvas,antialias:true}});
+-renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+-renderer.outputColorSpace=THREE.SRGBColorSpace;
+-renderer.toneMapping=THREE.ACESFilmicToneMapping;
+-renderer.toneMappingExposure=1.08;
+-renderer.shadowMap.enabled={str(spec["shadow"]).lower()};
+-renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+-const scene=new THREE.Scene();
+-scene.background=new THREE.Color({json.dumps(spec["background"])});
+-scene.fog=new THREE.FogExp2({json.dumps(spec["fog"][0])}, {spec["fog"][1]});
+-const camera=new THREE.PerspectiveCamera(55,2,0.1,100);
+-camera.position.set({spec["camera"][0]}, {spec["camera"][1]}, {spec["camera"][2]});
+-camera.lookAt({spec["lookat"][0]}, {spec["lookat"][1]}, {spec["lookat"][2]});
+-const ambient=new THREE.AmbientLight({json.dumps(spec["ambient"][0])}, {spec["ambient"][1]}); scene.add(ambient);
+-const hemi=new THREE.HemisphereLight({json.dumps(spec["hemi"][0])}, {json.dumps(spec["hemi"][1])}, {spec["hemi"][2]}); scene.add(hemi);
+-const dir=new THREE.DirectionalLight({json.dumps(spec["directional"][3])}, {spec["directional"][4]});
+-dir.position.set({spec["directional"][0]}, {spec["directional"][1]}, {spec["directional"][2]});
+-dir.castShadow={str(spec["shadow"]).lower()};
+-dir.shadow.mapSize.set(2048,2048);
+-dir.shadow.bias=-0.00025;
+-dir.shadow.camera.near=0.5; dir.shadow.camera.far=40;
+-dir.shadow.camera.left=-12; dir.shadow.camera.right=12; dir.shadow.camera.top=12; dir.shadow.camera.bottom=-12;
+-scene.add(dir);
+-const skyGeo=new THREE.SphereGeometry(60, 48, 32);
+-const skyMat=new THREE.ShaderMaterial({{
+-  side:THREE.BackSide, depthWrite:false, uniforms:{{
+-    topColor:{{value:new THREE.Color({json.dumps(spec["horizon"][0])})}},
+-    bottomColor:{{value:new THREE.Color({json.dumps(spec["horizon"][1])})}},
+-    offset:{{value:12}}, exponent:{{value:0.9}}
+-  }},
+-  vertexShader:`varying vec3 vWorldPosition;
+-void main(){{ vec4 worldPosition = modelMatrix * vec4(position, 1.0); vWorldPosition = worldPosition.xyz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }}`,
+-  fragmentShader:`uniform vec3 topColor; uniform vec3 bottomColor; uniform float offset; uniform float exponent; varying vec3 vWorldPosition;
+-void main(){{ float h = normalize(vWorldPosition + offset).y; gl_FragColor = vec4(mix(bottomColor, topColor, max(pow(max(h, 0.0), exponent), 0.0)), 1.0); }}`
+-}});
+-scene.add(new THREE.Mesh(skyGeo, skyMat));
+-const sun=new THREE.Mesh(
+-  new THREE.SphereGeometry({spec["sun"][3]}, 32, 24),
+-  new THREE.MeshBasicMaterial({{color:{json.dumps(spec["sun"][4])}}})
+-);
+-sun.position.set({spec["sun"][0]}, {spec["sun"][1]}, {spec["sun"][2]});
+-scene.add(sun);
+-const sunGlow=new THREE.Sprite(new THREE.SpriteMaterial({{
+-  color:{json.dumps(spec["sun"][4])}, transparent:true, opacity:{spec["sun"][5] * 0.28}
+-}}));
+-sunGlow.scale.set({spec["sun"][3] * 8.0}, {spec["sun"][3] * 8.0}, 1);
+-sunGlow.position.copy(sun.position);
+-scene.add(sunGlow);
+-const objects={json.dumps(spec["objects"])};
+-function matFor(o){{
+-  return new THREE.MeshPhysicalMaterial({{
+-    color:o.color||'#cccccc',
+-    roughness:o.roughness==null?0.35:o.roughness,
+-    metalness:o.metalness==null?0.18:o.metalness,
+-    emissive:o.emissive||'#000000',
+-    emissiveIntensity:o.emissiveIntensity==null?0:o.emissiveIntensity,
+-    clearcoat:0.18,
+-    clearcoatRoughness:0.22
+-  }});
+-}}
+-for(const o of objects){{
+-  let mesh;
+-  if(o.type==='box') mesh=new THREE.Mesh(new THREE.BoxGeometry(o.size,o.size,o.size), matFor(o));
+-  if(o.type==='sphere') mesh=new THREE.Mesh(new THREE.SphereGeometry(o.size,64,40), matFor(o));
+-  if(o.type==='torus') mesh=new THREE.Mesh(new THREE.TorusGeometry(o.size,o.tube,48,140), matFor(o));
+-  if(o.type==='cylinder') mesh=new THREE.Mesh(new THREE.CylinderGeometry(o.radius,o.radius,o.height,48,1), matFor(o));
+-  if(o.type==='capsule') mesh=new THREE.Mesh(new THREE.CapsuleGeometry(o.radius,o.height,12,24), matFor(o));
+-  if(o.type==='plane'){{ mesh=new THREE.Mesh(new THREE.PlaneGeometry(o.w,o.h,1,1), matFor(o)); }}
+-  if(o.type==='floor'){{
+-    mesh=new THREE.Mesh(new THREE.CircleGeometry(o.size,96), matFor(o));
+-    mesh.rotation.x=-Math.PI/2; mesh.position.y=o.y;
+-    mesh.receiveShadow={str(spec["shadow"]).lower()};
+-    scene.add(mesh);
+-    continue;
+-  }}
+-  mesh.position.set(o.x||0,o.y||0,o.z||0);
+-  mesh.rotation.set(o.rx||0,o.ry||0,o.rz||0);
+-  mesh.castShadow={str(spec["shadow"]).lower()};
+-  mesh.receiveShadow={str(spec["shadow"]).lower()};
+-  scene.add(mesh);
+-}}
+-const controls={str(spec["orbit"]).lower()} ? new THREE.OrbitControls(camera, renderer.domElement) : null;
+-if(controls){{controls.enableDamping=true;controls.target.set({spec["lookat"][0]}, {spec["lookat"][1]}, {spec["lookat"][2]});}}
+-function resize(){{const w=window.innerWidth,h=window.innerHeight;if(canvas.width!==w||canvas.height!==h){{renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}}}}
+-function tick(t){{resize(); sunGlow.material.opacity=0.18 + Math.sin(t*0.00035)*0.04 + {spec["sun"][5] * 0.16}; if(controls) controls.update(); renderer.render(scene,camera); requestAnimationFrame(tick);}}
+-requestAnimationFrame(tick);
++window.VOKKWorld3D({json.dumps(spec)});
+ </script>
+ </body>
+ </html>"""
+diff --git a/vokkv02 b/vokkv02
+index 3118c20..3f4012b 100755
+--- a/vokkv02
++++ b/vokkv02
+@@ -4,18 +4,25 @@
+ #   vokkv02 --run     wake VOKK (starts the server, opens the browser)
+ #   vokkv02 --stop    put VOKK to sleep (stops the server)
+ #   vokkv02 --status  check if VOKK is awake
++#   vokkv02 --public-run     wake VOKK and start a public localhost.run tunnel
++#   vokkv02 --public-stop    stop the public tunnel
++#   vokkv02 --public-status  print the current public URL if available
+ 
+ PROJECT="/Users/tinkerspace/vokk-project"
+ PORT="${VOKK_PORT:-8777}"
+ URL="http://127.0.0.1:${PORT}"
+ PIDFILE="$HOME/.vokk/vokk.pid"
+ LOGFILE="$HOME/.vokk/vokk.log"
++PUBLIC_LOGFILE="$HOME/.vokk/localhostrun.log"
++PUBLIC_URL_FILE="$HOME/.vokk/public_url.txt"
++TMUX_BIN="${TMUX_BIN:-/opt/homebrew/bin/tmux}"
+ PYTHON="${VOKK_PYTHON:-/Library/Frameworks/Python.framework/Versions/3.12/bin/python3}"
+ PLIST="$HOME/Library/LaunchAgents/com.vokk.v02.plist"
+ mkdir -p "$HOME/.vokk"
+ mkdir -p "$HOME/Library/LaunchAgents"
+ 
+ is_up() { curl -s -o /dev/null -m 1 "$URL" 2>/dev/null; }
++public_url() { grep -Eo 'https://[a-z0-9.-]+\.lhr\.life' "$PUBLIC_LOGFILE" | tail -n 1; }
+ 
+ case "${1:---run}" in
+   --run|run|"")
+@@ -81,12 +88,51 @@ PLIST
+   --status|status)
+     if is_up; then echo "VOKK is awake at $URL"; else echo "VOKK is asleep."; fi
+     ;;
++  --public-run|public-run)
++    "$0" --run >/dev/null 2>&1 || exit 1
++    if [ ! -x "$TMUX_BIN" ]; then
++      echo "tmux not found at $TMUX_BIN"
++      exit 1
++    fi
++    rm -f "$PUBLIC_LOGFILE" "$PUBLIC_URL_FILE"
++    "$TMUX_BIN" kill-session -t vokk_tunnel >/dev/null 2>&1 || true
++    "$TMUX_BIN" new-session -d -s vokk_tunnel "sh -lc 'ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -R 80:127.0.0.1:${PORT} nokey@localhost.run 2>&1 | tee \"$PUBLIC_LOGFILE\"'"
++    for i in $(seq 1 24); do
++      U="$(public_url)"
++      if [ -n "$U" ]; then
++        printf '%s\n' "$U" > "$PUBLIC_URL_FILE"
++        echo "VOKK public URL → $U"
++        open "$U" 2>/dev/null
++        exit 0
++      fi
++      sleep 1
++    done
++    echo "Public tunnel did not report a URL in time."
++    tail -n 20 "$PUBLIC_LOGFILE" 2>/dev/null
++    exit 1
++    ;;
++  --public-stop|public-stop)
++    if [ -x "$TMUX_BIN" ]; then
++      "$TMUX_BIN" kill-session -t vokk_tunnel >/dev/null 2>&1 || true
++    fi
++    pkill -f '[l]ocalhost\.run' >/dev/null 2>&1 || true
++    rm -f "$PUBLIC_URL_FILE"
++    echo "VOKK public tunnel stopped."
++    ;;
++  --public-status|public-status)
++    U="$(cat "$PUBLIC_URL_FILE" 2>/dev/null)"
++    if [ -n "$U" ]; then
++      echo "VOKK public URL: $U"
++    else
++      echo "No saved public URL."
++    fi
++    ;;
+   -h|--help|help)
+-    echo "vokkv02 --run | --stop | --status"
++    echo "vokkv02 --run | --stop | --status | --public-run | --public-stop | --public-status"
+     ;;
+   *)
+     echo "Unknown option: $1"
+-    echo "vokkv02 --run | --stop | --status"
++    echo "vokkv02 --run | --stop | --status | --public-run | --public-stop | --public-status"
+     exit 1
+     ;;
+ esac

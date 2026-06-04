@@ -2314,8 +2314,7 @@ def _agentic_rag_context(prompt: str) -> Dict[str, Any]:
     blocks = [
         "[Agentic plan]\n"
         + "\n".join(f"- {stage}" for stage in plan.get("stages", []))
-        + ("\n[Focus query]\n" + str(plan.get("focus_query")) if plan.get("focus_query") else ""),
-        "[Todo list]\n" + "\n".join(f"[ ] {stage}" for stage in plan.get("stages", [])),
+        + ("\n[Focus query]\n" + str(plan.get("focus_query")) if plan.get("focus_query") else "")
     ]
     if local.get("context"):
         blocks.append("[Local SelfRAG]\n" + local["context"][:5000])
@@ -3132,7 +3131,6 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
     <div style="color:var(--muted);font-size:13px">Email/password is real local auth with hashed passwords and a server session cookie. Provider/SMS/QR buttons are visible entry points until real external credentials are added.</div></div>
   <div class="authrow"><input id="loginid" placeholder="email"><input id="loginpw" type="password" placeholder="password (8+ chars)"></div>
   <div class="authrow"><button class="primary" id="loginbtn">Sign in</button><button class="primary" id="registerbtn">Create account</button></div>
-  <div class="authrow"><button class="mini" id="guestbtn">Continue as guest</button></div>
   <div class="whisper" id="authmsg" style="margin-top:10px"></div>
 </div></div>
 <div id="ctx"></div>
@@ -3317,24 +3315,17 @@ let modelPreset=localStorage.getItem('vokk-model-preset')||'chat';
 
 /* local login gate */
 let auth=null;
-let guestMode=localStorage.getItem('vokk-guest-mode')==='1';
 let authMethod=localStorage.getItem('vokk-auth-method')||'otp';
-function isGuest(){return guestMode&&!auth;}
 function storeKey(k){return auth&&auth.email?'vokk-'+k+'-'+auth.email:'vokk-'+k+'-guest';}
-function loadStores(){
-  if(isGuest()){convs=[];drafts={};loadSideStores();return;}
-  convs=JSON.parse(localStorage.getItem(storeKey('convs'))||'[]');
+function loadStores(){convs=JSON.parse(localStorage.getItem(storeKey('convs'))||'[]');
   drafts=JSON.parse(localStorage.getItem(storeKey('drafts'))||'{}');loadSideStores();}
 function refreshAuth(){
-  const gated=!auth&&!guestMode;
-  $('login').classList.toggle('show',gated);
-  document.body.classList.toggle('locked',gated);
-  if(auth){renderList();}
-  else if(guestMode){$('convlist').innerHTML='<div class="whisper" style="padding:10px">Guest mode is live. Chat works, but history is not saved.</div>';}
-  else {$('convlist').innerHTML='<div class="whisper" style="padding:10px">Sign in to load chat history, or continue as guest with no saved chat history.</div>';}
+  $('login').classList.toggle('show',!auth);
+  document.body.classList.toggle('locked',!auth);
+  if(auth){renderList();} else {$('convlist').innerHTML='<div class="whisper" style="padding:10px">Sign in to load chat history.</div>';}
 }
 async function checkAuth(){try{const r=await fetch('/api/auth/me');const j=await r.json();
-  auth=j.ok?j.user:null;if(auth){guestMode=false;localStorage.removeItem('vokk-guest-mode');}loadStores();}catch(e){auth=null;}refreshAuth();}
+  auth=j.ok?j.user:null;loadStores();}catch(e){auth=null;}refreshAuth();}
 document.querySelectorAll('.authopt').forEach(b=>b.onclick=()=>{
   authMethod=b.dataset.auth;localStorage.setItem('vokk-auth-method',authMethod);
   document.querySelectorAll('.authopt').forEach(x=>x.style.outline='');b.style.outline='2px solid var(--accent)';
@@ -3345,18 +3336,14 @@ async function authCall(path){$('authmsg').textContent='';const email=($('logini
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({email,password,display_name,method:authMethod})});const j=await r.json();
   if(!r.ok||j.error){$('authmsg').textContent=j.error||'Auth failed';return;}
-  guestMode=false;localStorage.removeItem('vokk-guest-mode');
   auth=j.user||{email:j.email,display_name};loadStores();refreshAuth();box.focus();}
 $('loginbtn').onclick=()=>authCall('/api/auth/login');
 $('registerbtn').onclick=()=>authCall('/api/auth/register');
-$('guestbtn').onclick=()=>{guestMode=true;auth=null;localStorage.setItem('vokk-guest-mode','1');
-  convs=[];drafts={};curId=null;newChat();refreshAuth();box.focus();};
 $('loginid').addEventListener('keydown',e=>{if(e.key==='Enter')$('loginpw').focus();});
 $('loginpw').addEventListener('keydown',e=>{if(e.key==='Enter')$('loginbtn').click();});
-$('logout').onclick=async()=>{if(auth)await fetch('/api/auth/logout',{method:'POST'});auth=null;guestMode=false;
-  localStorage.removeItem('vokk-guest-mode');convs=[];drafts={};curId=null;newChat();refreshAuth();};
+$('logout').onclick=async()=>{await fetch('/api/auth/logout',{method:'POST'});auth=null;convs=[];drafts={};curId=null;newChat();refreshAuth();};
 $('wipehist').onclick=()=>{if(!confirm('Delete all VOKK chat history on this browser?'))return;
-  convs=[];drafts={};if(!isGuest()){localStorage.removeItem(storeKey('convs'));localStorage.removeItem(storeKey('drafts'));}
+  convs=[];drafts={};localStorage.removeItem(storeKey('convs'));localStorage.removeItem(storeKey('drafts'));
   curId=null;newChat();renderList();};
 function sessionArchiveText(c){
   const lines=[];
@@ -3642,7 +3629,7 @@ const projectCatalog=[
 ];
 function loadDraft(){box.value=drafts[curId||'__new']||'';box.style.height='28px';
   box.style.height=Math.min(box.scrollHeight,160)+'px';}
-const save=()=>{if(isGuest())return;localStorage.setItem(storeKey('convs'),JSON.stringify(convs));};
+const save=()=>localStorage.setItem(storeKey('convs'),JSON.stringify(convs));
 function loadSideStores(){
   artifacts=JSON.parse(localStorage.getItem(storeKey('artifacts'))||'[]');
   notes=JSON.parse(localStorage.getItem(storeKey('notes'))||'[]');
@@ -3687,7 +3674,6 @@ function loadSideStores(){
 function saveSide(k,v){localStorage.setItem(storeKey(k),JSON.stringify(v));}
 const cur=()=>convs.find(c=>c.id===curId);
 function renderList(){const L=$('convlist');L.innerHTML='';
-  if(!auth&&guestMode){L.innerHTML='<div class="whisper" style="padding:10px">Guest mode does not keep chat history.</div>';return;}
   if(!auth){L.innerHTML='<div class="whisper" style="padding:10px">Sign in to load chat history.</div>';return;}
   $('viewlabel').textContent=activeView[0].toUpperCase()+activeView.slice(1);
   const q=($('chatsearch').value||'').toLowerCase();
@@ -3744,7 +3730,7 @@ function newChat(){curId=null;$('topttl').textContent='New chat';
     '<div class="chip" data-q="Use Composer to create an AI-made soft lo-fi melody with glassy bells and warm bass">AI melody</div>'+
     '<div class="chip" data-q="Use Agent mode to plan a 3-day Munnar trip with web research, costs, and a checklist">AI trip plan</div></div></div>';
   bindChips();renderList();loadDraft();box.focus();}
-function openConv(id){if(!auth&&!guestMode){refreshAuth();return;}curId=id;const c=cur();$('topttl').textContent=c.title||'Chat';
+function openConv(id){if(!auth){refreshAuth();return;}curId=id;const c=cur();$('topttl').textContent=c.title||'Chat';
   col.innerHTML='';c.msgs.forEach((m,i)=>m.who==='me'?drawMe(m.text,i):drawAi(m.data,i));
   renderList();loadDraft();logEl.scrollTop=logEl.scrollHeight;}
 $('newchat').onclick=newChat;
@@ -3954,12 +3940,12 @@ function drawAi(d,idx=null){dropHero();const m=document.createElement('div');m.c
   m.appendChild(meta);col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 
 async function continueAnswer(d){
-  if((!auth&&!guestMode)||!d.__lastq)return;
+  if(!auth||!d.__lastq)return;
   const tm=document.createElement('div');tm.className='msg ai';
   tm.innerHTML='<div class="bubble"><span class="typing"><span></span><span></span><span></span></span> <span class="whisper">continuing…</span></div>';
   col.appendChild(tm);logEl.scrollTop=logEl.scrollHeight;
   const r=await fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({prompt:d.__lastq,previous:d.response||'',continue_count:(d.__continue_count||0)+1,guest:isGuest()})});
+    body:JSON.stringify({prompt:d.__lastq,previous:d.response||'',continue_count:(d.__continue_count||0)+1})});
   const nd=await r.json();tm.remove();nd.__lastq=d.__lastq;nd.__type=true;nd.__continue_count=(d.__continue_count||0)+1;
   const c=cur();let aiIdx=null;if(c){aiIdx=c.msgs.length;c.msgs.push({who:'ai',data:nd});save();renderList();}
   drawAi(nd,aiIdx);
@@ -3983,7 +3969,6 @@ function showUserAsk(spec,original){
 }
 
 async function maybeMemoryPopup(q,extra){
-  if(isGuest())return false;
   if(extra.memory_checked||!/\b(remember|memory|other session|old session|previous chat)\b/i.test(q))return false;
   const r=await fetch('/api/memory?q='+encodeURIComponent(q));const j=await r.json();
   const mems=(j.memories||[]).slice(0,8);if(!mems.length)return false;
@@ -4018,7 +4003,7 @@ function playScore(score,wave){actx=actx||new(window.AudioContext||window.webkit
 
 box.addEventListener('input',()=>{box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';
   // per-session draft persistence: remember what you were typing in THIS session
-  drafts[curId||'__new']=box.value;if(!isGuest())localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));});
+  drafts[curId||'__new']=box.value;localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));});
 
 /* ── mode toggle (Chat / Think) ── */
 let mode=localStorage.getItem('vokk-mode')||'chat';
@@ -4033,17 +4018,17 @@ $('voicebtn').onclick=()=>{if(!lastAiText||!window.speechSynthesis)return;
 $('emojibtn').onclick=()=>{const bits=['✨','🎛️','🧠','🎨','🎵','[sticker: tiny dramatic narrator]','[gif: neon pen sparkle loop]'];
   box.value+=(box.value?' ':'')+bits[Math.floor(Math.random()*bits.length)];box.focus();};
 
-async function ask(extra={}){if(!auth&&!guestMode){refreshAuth();$('loginid').focus();return;}const q=(extra.prompt||box.value).trim();if(!q)return;
+async function ask(extra={}){if(!auth){refreshAuth();$('loginid').focus();return;}const q=(extra.prompt||box.value).trim();if(!q)return;
   if(await maybeMemoryPopup(q,extra))return;
   if(!extra.prompt){box.value='';box.style.height='28px';}send.disabled=true;
   if(!curId){curId=Date.now()+'';convs.push({id:curId,title:'New chat',msgs:[]});save();}
   const reqId=curId;                       // bind this request to the session it started in
   const c=cur();const myIdx=c.msgs.length;if(!extra.skipDraw){drawMe(q,myIdx);c.msgs.push({who:'me',text:q});save();}
-  delete drafts[reqId];if(!isGuest())localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));
+  delete drafts[reqId];localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));
   // AI label on first message (replaces raw-first-line title)
   if(c.msgs.filter(x=>x.who==='me').length===1){
     fetch('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text:q,guest:isGuest()})}).then(r=>r.json()).then(j=>{
+      body:JSON.stringify({text:q})}).then(r=>r.json()).then(j=>{
         const cc=convs.find(x=>x.id===reqId);if(cc){cc.title=j.title||'Chat';save();
           if(curId===reqId)$('topttl').textContent=cc.title;renderList();}}).catch(()=>{});}
   const tm=document.createElement('div');tm.className='msg ai';
@@ -4072,7 +4057,7 @@ async function ask(extra={}){if(!auth&&!guestMode){refreshAuth();$('loginid').fo
     // streaming live in soft white — so you watch it think instead of staring at nothing.
     if(mode==='think' && $('showthink').checked){
       const tr=await fetch('/api/think',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({prompt:q,guest:isGuest()})});const tj=await tr.json();
+        body:JSON.stringify({prompt:q})});const tj=await tr.json();
       preThink=tj.thinking||null; preThinkMs=tj.think_ms||0;
       if(preThink && curId===reqId){
         tm.querySelector('.typing').style.display='none';
@@ -4085,7 +4070,7 @@ async function ask(extra={}){if(!auth&&!guestMode){refreshAuth();$('loginid').fo
     }
     // PHASE 2: the answer (reusing the thinking we already streamed)
     const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({prompt:q,mode:mode,model_preset:modelPreset,thinking:preThink,think_ms:preThinkMs,userask_answer:extra.userask_answer||null,guest:isGuest()})});
+      body:JSON.stringify({prompt:q,mode:mode,model_preset:modelPreset,thinking:preThink,think_ms:preThinkMs,userask_answer:extra.userask_answer||null})});
     const d=await r.json();clearInterval(tick);
     if(d.userask){tm.remove();showUserAsk(d.userask,q);return;}
     if(preThink){d.thinking=preThink;d.think_ms=preThinkMs;d.__shown_think=true;}
@@ -4278,13 +4263,8 @@ class Handler(BaseHTTPRequestHandler):
                 }); return
 
             user = self._current_user()
-            guest_user = {"id": 0, "email": "guest@local", "display_name": "Guest"}
-            guest_allowed_paths = {"/api/label", "/api/continue", "/api/think", "/api/chat"}
             if not user:
-                if self.path in guest_allowed_paths and bool(payload.get("guest")):
-                    user = guest_user
-                else:
-                    self._json(401, {"error": "login required", "code": "AUTH"}); return
+                self._json(401, {"error": "login required", "code": "AUTH"}); return
             # AI session labelling: short, meaningful title for a conversation.
             if self.path == "/api/label":
                 first = (payload.get("text") or "").strip()[:500]
@@ -4453,7 +4433,7 @@ class Handler(BaseHTTPRequestHandler):
             elif model_preset in {"selfrag", "self_rag"}:
                 generation_prompt += "\n\n[Model preset: SelfRAG]\nUse VOKK's local files, summaries, and saved memory as primary evidence. Cite concrete local signals where helpful."
             elif model_preset in {"agenticrag", "agentic_rag"}:
-                generation_prompt += "\n\n[Model preset: AgenticRAG]\nWork in explicit steps with a visible todo list: plan retrieval, inspect local context, inspect linked/web context, compare evidence, answer, then list remaining uncertainty honestly."
+                generation_prompt += "\n\n[Model preset: AgenticRAG]\nWork in explicit steps: plan retrieval, inspect local context, inspect linked/web context, compare evidence, answer, then list remaining uncertainty honestly."
             if model_preset in {"agent", "vokkdo"}:
                 generation_prompt += "\n\n[Model preset: Agent]\nUse BigNice visible loop: goal, plan, research/checks, execution steps, reflection, memory-worthy notes. Use autonomous multistep planning, tool/API handoff notes, proactive next decisions, and self-correction loops."
             elif model_preset == "reasoning":
