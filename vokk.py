@@ -102,6 +102,13 @@ def _key(name: str) -> Optional[str]:
 GEMINI_KEY = _key("GEMINI_API_KEY")
 GLM_KEY = _key("GLM_API_KEY")
 SERPAPI_KEY = _key("SERPAPI_KEY") or _key("SERP_API_KEY") or _key("SERPAPI_API_KEY")
+# ElevenLabs voice (TTS). Inert with no harm if the key is absent — the UI falls
+# back to the browser's built-in speechSynthesis. Never hardcoded; loaded like the rest.
+ELEVENLABS_KEY = _key("ELEVENLABS_API_KEY") or _key("ELEVEN_API_KEY") or _key("ELEVENLABS_KEY")
+# Optional explicit voice id; if unset we auto-detect by name (see ELEVENLABS_VOICE_NAME).
+ELEVENLABS_VOICE_ID = _key("ELEVENLABS_VOICE_ID")
+ELEVENLABS_VOICE_NAME = (_key("ELEVENLABS_VOICE_NAME")
+                         or "a perfect realistic young adult guy voice")
 API_KEY = GEMINI_KEY  # back-compat alias; "live" overall if any provider has a key
 HAVE_ANY_KEY = bool(GEMINI_KEY or GLM_KEY)
 COGNITIVE = CognitiveWorkflow()
@@ -509,6 +516,81 @@ def _call_engine(engine: str, prompt: str, system: str, temp: float) -> str:
     if errors:
         raise RuntimeError(" | ".join(errors))
     raise RuntimeError("no provider key available")
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# ElevenLabs voice (TTS). The "hey VOKK" wake word stays on the browser's
+# SpeechRecognition (input); this adds a REAL spoken-output voice. With no key
+# present, every function here no-ops and the UI falls back to browser TTS.
+# ─────────────────────────────────────────────────────────────────────────
+ELEVEN_API = "https://api.elevenlabs.io/v1"
+_ELEVEN_VOICE_CACHE: Dict[str, Any] = {"id": None, "name": None, "checked": False}
+
+
+def eleven_enabled() -> bool:
+    return bool(ELEVENLABS_KEY)
+
+
+def _eleven_resolve_voice() -> Optional[str]:
+    """Return the voice id to speak with. Priority: explicit ELEVENLABS_VOICE_ID,
+    then auto-detect the user's custom voice by name from their account, cached."""
+    if not ELEVENLABS_KEY:
+        return None
+    if ELEVENLABS_VOICE_ID:
+        return ELEVENLABS_VOICE_ID
+    if _ELEVEN_VOICE_CACHE["checked"]:
+        return _ELEVEN_VOICE_CACHE["id"]
+    _ELEVEN_VOICE_CACHE["checked"] = True
+    try:
+        req = urllib.request.Request(f"{ELEVEN_API}/voices",
+                                     headers={"xi-api-key": ELEVENLABS_KEY})
+        with urllib.request.urlopen(req, timeout=15, context=HTTPS_CONTEXT) as r:
+            voices = json.loads(r.read().decode()).get("voices", [])
+    except Exception:
+        return None
+    want = ELEVENLABS_VOICE_NAME.strip().lower()
+    # exact name match first, then substring, then first available voice
+    pick = (next((v for v in voices if str(v.get("name", "")).strip().lower() == want), None)
+            or next((v for v in voices if want in str(v.get("name", "")).strip().lower()), None)
+            or (voices[0] if voices else None))
+    if pick:
+        _ELEVEN_VOICE_CACHE["id"] = pick.get("voice_id")
+        _ELEVEN_VOICE_CACHE["name"] = pick.get("name")
+    return _ELEVEN_VOICE_CACHE["id"]
+
+
+def eleven_voice_name() -> Optional[str]:
+    if not ELEVENLABS_KEY:
+        return None
+    _eleven_resolve_voice()
+    return _ELEVEN_VOICE_CACHE["name"] or ELEVENLABS_VOICE_NAME
+
+
+def eleven_tts(text: str) -> Optional[bytes]:
+    """Synthesize speech with the resolved voice. Returns MP3 bytes, or None if
+    the key/voice is unavailable so the caller can fall back to browser TTS."""
+    if not ELEVENLABS_KEY:
+        return None
+    voice_id = _eleven_resolve_voice()
+    if not voice_id:
+        return None
+    clean = re.sub(r"\[\[/?\w+\]\]", "", text or "").strip()[:5000]
+    if not clean:
+        return None
+    body = json.dumps({
+        "text": clean,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+    }).encode()
+    req = urllib.request.Request(
+        f"{ELEVEN_API}/text-to-speech/{voice_id}",
+        data=body,
+        headers={"xi-api-key": ELEVENLABS_KEY,
+                 "Content-Type": "application/json",
+                 "Accept": "audio/mpeg"},
+    )
+    with urllib.request.urlopen(req, timeout=60, context=HTTPS_CONTEXT) as r:
+        return r.read()
 
 
 SAFETY_BOUNCER_SYSTEM = (
@@ -946,6 +1028,10 @@ CONTEXTUAL_EDGE_TRAINING = (
     " - Plain-language rule: harmless profanity, sharp political opinions, rude jokes, adult humor, "
     "and blunt criticism are allowed when they are clearly discussion, comedy, or opinion rather than "
     "instructions for harm. Do not sanitize ordinary human speech into HR language.\n"
+    " - Opinion-question shape: if the user asks a blunt opinion question about a public figure, bad idea, "
+    "or absurd situation, you can open with a quick human reaction first, then soften it a notch, then give "
+    "the real point. Good pattern: 'yeah, kind of, but let's not be lazy about it' or 'honestly, a bit, "
+    "but the real issue is...' The answer should sound like a person talking, not a civics textbook.\n"
     " - Never provide recipes, step-by-step instructions, tools, code, phishing pages, evasion tactics, "
     "or operational details for explosives, hacking accounts, weaponized harm, sabotage, or illegal "
     "entry. Dark humor and fiction can exist without becoming a how-to manual."
@@ -1060,7 +1146,9 @@ class SwiftBrain(Brain):
     btype, conf, temp, engine = BrainType.SWIFT, 0.88, 0.5, "glm"
     system = (IDENTITY + "As VOKK Swift, the fast mind, answer like a sharp actual human: brief, warm, lightly funny, "
               "relatable to normal life, and willing to point out one odd-but-true thing people miss. "
-              "Never sound like a press release. One or two short paragraphs at most." + EXPRESSIVE)
+              "Never sound like a press release. For blunt opinion questions, start with a quick human read, then pull back "
+              "slightly and explain the real thing in plain English. Prefer 'yeah, kind of, but...' over stiff neutrality. "
+              "One or two short paragraphs at most." + EXPRESSIVE)
 
 
 class ScoutBrain(Brain):
@@ -2692,21 +2780,69 @@ class VokkDoManager:
             conn.commit()
         return {"project": project, "permission": permission, "granted": granted}
 
+    # Generic fallback lanes (only used if no engine is reachable).
+    _DEFAULT_LANES = [
+        {"lane": "architect", "task": "Map files, contracts, risks, and the smallest coherent implementation path."},
+        {"lane": "builder", "task": "Draft the implementation steps and edits that would satisfy the request."},
+        {"lane": "verifier", "task": "Define checks, smoke tests, rollback points, and acceptance evidence."},
+    ]
+
+    _PLAN_SYSTEM = (
+        "You are VOKK's agency mind (Scout) planning a build. Output ONLY compact JSON, no prose, no markdown:\n"
+        '{"clarifying_questions": [up to 3 short, specific questions you genuinely need answered before building '
+        '— omit if the request is already clear], '
+        '"lanes": [{"lane":"architect|builder|verifier","task":"one concrete sentence for THIS request"}], '
+        '"summary": "one sentence on the approach"}\n'
+        "Rules: tailor everything to the actual request. NEVER ask the user for an API key, token, or credential "
+        "— VOKK uses its own configured engines. Clarifying questions are about scope/behavior/constraints only."
+    )
+
+    def _model_plan(self, prompt: str) -> Dict[str, Any]:
+        """Real, prompt-specific plan + clarifying questions via VOKK's own engine.
+        Returns {} on any failure so the caller can fall back to defaults."""
+        if not HAVE_ANY_KEY:
+            return {}
+        try:
+            raw = _call_engine("gemini", prompt, self._PLAN_SYSTEM, 0.3)
+            data = json.loads(_strip_fences(raw))
+        except Exception:
+            return {}
+        lanes = [l for l in data.get("lanes", [])
+                 if isinstance(l, dict) and l.get("lane") and l.get("task")]
+        questions = [q for q in data.get("clarifying_questions", [])
+                     if isinstance(q, str) and q.strip()
+                     and "api key" not in q.lower() and "token" not in q.lower()]
+        out: Dict[str, Any] = {}
+        if lanes:
+            out["lanes"] = lanes[:3]
+        if questions:
+            out["clarifying_questions"] = questions[:3]
+        if data.get("summary"):
+            out["summary"] = str(data["summary"])[:400]
+        return out
+
     def plan(self, user_id: int, project: str, prompt: str, mode: str = "parallel") -> Dict[str, Any]:
         perms = self.permissions(user_id, project)
-        lanes = [
-            {"lane": "architect", "task": "Map files, contracts, risks, and the smallest coherent implementation path."},
-            {"lane": "builder", "task": "Draft the implementation steps and edits that would satisfy the request."},
-            {"lane": "verifier", "task": "Define checks, smoke tests, rollback points, and acceptance evidence."},
-        ]
+        model = self._model_plan(prompt)
+        lanes = model.get("lanes") or self._DEFAULT_LANES
         missing = [p for p in ("read_files", "write_files", "run_tests") if not perms.get(p)]
-        status = "needs_permission" if missing else "ready"
+        # Clarifying questions gate the plan: if VOKK needs answers, it asks BEFORE acting.
+        questions = model.get("clarifying_questions", [])
+        if questions:
+            status = "needs_clarification"
+        elif missing:
+            status = "needs_permission"
+        else:
+            status = "ready"
         result = {
             "project": project,
             "mode": mode,
             "status": status,
             "missing_permissions": missing,
+            "clarifying_questions": questions,
+            "summary": model.get("summary", ""),
             "lanes": lanes,
+            "keys": "VOKK uses its own configured engines — you never supply an API key here.",
             "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest()[:16],
             "note": "Vokk-DO is staged: it plans in parallel now; mutation/execution requires Project Permission X grants.",
         }
@@ -3238,7 +3374,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
     <div class="modes">
       <button class="mode active" id="m-chat" data-mode="chat">⚡ Chat</button>
       <button class="mode" id="m-think" data-mode="think">✶ Think</button>
-      <button class="mode wakepill" id="wakebtn" title="Listen for hey VOKK, hey Codex, hey Aghsoh, or hey Aghosh">hey VOKK</button>
+      <button class="mode wakepill" id="wakebtn" title="Listen for hey VOKK">hey VOKK</button>
       <button class="mode" id="voicebtn" title="Read last answer" style="display:none">Voice</button>
       <button class="mode" id="emojibtn" title="Drop a sticker" style="display:none">Sticker</button>
       <label class="showthink"><input type="checkbox" id="showthink" checked> show thinking</label>
@@ -3249,7 +3385,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
         <button data-tool="image">Image: ask Canvas</button>
         <button data-tool="video">Video: cartoon pre-alpha</button>
         <button data-tool="sticker">Stickers / GIF text</button>
-        <button data-tool="wake">Wake words: VOKK / Codex / Aghsoh</button>
+        <button data-tool="wake">Wake word: hey VOKK</button>
         <div class="modelpick">
           <label for="modelpreset">Model</label>
           <select id="modelpreset">
@@ -3521,8 +3657,18 @@ $('dopreview').onclick=async()=>{
   const task=($('docmd').value||'').trim()||'inspect project';
   const r=await fetch('/api/vokkdo/plan',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({project:projectName(),task,mode:'parallel'})});
-  const j=await readJsonSafe(r,'VOKK-DO plan');$('donarr').textContent='Narrator: VOKK-DO made a plan before touching the wires.';
-  $('dostdout').textContent=JSON.stringify(j.run||j,null,2);$('dostderr').textContent='';
+  const j=await readJsonSafe(r,'VOKK-DO plan');const run=j.run||j;
+  const qs=run.clarifying_questions||[];
+  const lanes=(run.lanes||[]).map(l=>'  • ['+l.lane+'] '+l.task).join('\n');
+  let txt='';
+  if(run.summary)txt+='Approach: '+run.summary+'\n\n';
+  if(qs.length){txt+='VOKK needs to check a few things first:\n'+qs.map((q,i)=>'  '+(i+1)+'. '+q).join('\n')+'\n\n';
+    $('donarr').textContent='Narrator: VOKK-DO has questions before it touches the wires.';}
+  else{$('donarr').textContent='Narrator: VOKK-DO made a plan before touching the wires.';}
+  txt+='Plan ('+run.status+'):\n'+lanes;
+  if(run.missing_permissions&&run.missing_permissions.length)txt+='\n\nNeeds permission: '+run.missing_permissions.join(', ');
+  if(run.keys)txt+='\n\n'+run.keys;
+  $('dostdout').textContent=txt;$('dostderr').textContent='';
 };
 $('dorun').onclick=async()=>{
   if(!auth){refreshAuth();return;}
@@ -3645,12 +3791,6 @@ $('appprep').onclick=()=>{
 
 /* Wake words: browser speech recognition, then dictation into the prompt box */
 let wakeRec=null,wakeOn=false;
-const wakeAliases=[
-  {re:/hey\s+vo(?:kk|k|ke)/i,label:'hey VOKK'},
-  {re:/hey\s+codex/i,label:'hey Codex'},
-  {re:/hey\s+aghsoh/i,label:'hey Aghsoh'},
-  {re:/hey\s+aghosh/i,label:'hey Aghosh'}
-];
 function wakeSupported(){return window.SpeechRecognition||window.webkitSpeechRecognition;}
 function setWake(on,msg){wakeOn=on;$('wakebtn').classList.toggle('listening',on);
   $('wakebtn').textContent=on?'listening...':'hey VOKK';if(msg)$('hint').textContent=msg;}
@@ -3661,16 +3801,15 @@ $('wakebtn').onclick=()=>{
   wakeRec.onresult=e=>{
     const said=Array.from(e.results).slice(-1)[0][0].transcript.trim();
     const clean=said.toLowerCase().replace(/[,.!?]/g,'');
-    const matched=wakeAliases.find(a=>a.re.test(clean));
-    if(matched){
-      const rest=said.replace(matched.re,'').trim();
+    if(clean.includes('hey vokk')||clean.includes('hey vok')||clean.includes('hey voke')){
+      const rest=said.replace(/hey\\s+vo(?:kk|k|ke)/i,'').trim();
       box.value=rest||box.value;box.focus();box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';
-      $('hint').textContent=rest?matched.label+' heard. Prompt captured.':matched.label+' heard. Type or speak the request.';
+      $('hint').textContent=rest?'hey VOKK heard. Prompt captured.':'hey VOKK heard. Type or speak the request.';
     }
   };
   wakeRec.onerror=e=>setWake(false,'Wake listener stopped: '+(e.error||'speech error'));
   wakeRec.onend=()=>{if(wakeOn){try{wakeRec.start();}catch(_){setWake(false,'Wake listener paused.');}}};
-  try{wakeRec.start();setWake(true,'Listening for hey VOKK, hey Codex, hey Aghsoh, or hey Aghosh.');}catch(e){setWake(false,'Wake listener could not start.');}
+  try{wakeRec.start();setWake(true,'Listening for hey VOKK.');}catch(e){setWake(false,'Wake listener could not start.');}
 };
 
 /* right-click context menu */
@@ -3812,8 +3951,26 @@ function addSideItem(view,title,body,type='manual'){
 document.querySelectorAll('.navbtn').forEach(btn=>btn.onclick=()=>{activeView=btn.dataset.view;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active',b===btn));renderList();});
 $('chatsearch').addEventListener('input',renderList);
+function displayNameForGreeting(){
+  const raw=((auth&&auth.display_name)||(auth&&auth.email&&auth.email.split('@')[0])||'friend').trim();
+  return raw||'friend';
+}
+function nextGreeting(){
+  const name=displayNameForGreeting();
+  const picks=[
+    'hello '+name,
+    'what is popping, '+name+'?',
+    'yo '+name,
+    'welcome '+name,
+    name+'-san wa ooki desu',
+    'hey '+name+', what are we building?',
+    'good to see you, '+name
+  ];
+  return picks[Math.floor(Math.random()*picks.length)];
+}
 function newChat(){curId=null;$('topttl').textContent='New chat';
-  col.innerHTML='<div id="hero"><div class="heromark">V</div><span class="madeai">Made with AI prompts</span><h1>What should VOKK actualise?</h1>'+
+  const greet=esc(nextGreeting());
+  col.innerHTML='<div id="hero"><div class="heromark">V</div><span class="madeai">Made with AI prompts</span><h1>'+greet+'</h1>'+
     '<p>Pick an AI-made starting spark, or type your own and let VOKK route it.</p>'+
     '<div class="chips"><div class="chip" data-q="Use Canvas to make an AI-generated liquid-glass sunrise over a quiet mountain lake">AI sunrise</div>'+
     '<div class="chip" data-q="Use Composer to create an AI-made soft lo-fi melody with glassy bells and warm bass">AI melody</div>'+
@@ -4117,9 +4274,25 @@ function setMode(m){mode=m;localStorage.setItem('vokk-mode',m);
   $('hint').textContent=m==='think'?'Think = reasons for a while before answering (slower, deeper)'
     :'Chat = fast answers · switch to Think for hard problems';}
 $('m-chat').onclick=()=>setMode('chat');$('m-think').onclick=()=>setMode('think');setMode(mode);
-$('voicebtn').onclick=()=>{if(!lastAiText||!window.speechSynthesis)return;
-  speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(lastAiText.replace(/\[\[\/?\w+\]\]/g,''));
-  u.rate=1.02;u.pitch=1.0;speechSynthesis.speak(u);};
+/* Voice output: prefer VOKK's ElevenLabs voice (server /api/tts), fall back to
+   the browser's built-in speechSynthesis when no key is configured. */
+let vokkAudio=null;
+function browserSpeak(text){if(!window.speechSynthesis)return;
+  speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);
+  u.rate=1.02;u.pitch=1.0;speechSynthesis.speak(u);}
+async function speakText(text){
+  const clean=(text||'').replace(/\[\[\/?\w+\]\]/g,'').trim();if(!clean)return;
+  try{
+    const r=await fetch('/api/tts',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({text:clean})});
+    if(r.ok&&(r.headers.get('Content-Type')||'').includes('audio')){
+      const buf=await r.blob();if(vokkAudio){vokkAudio.pause();}
+      vokkAudio=new Audio(URL.createObjectURL(buf));vokkAudio.play();return;
+    }
+  }catch(e){/* network/voice unavailable -> fall through to browser voice */}
+  browserSpeak(clean);
+}
+$('voicebtn').onclick=()=>{if(!lastAiText)return;speakText(lastAiText);};
 $('emojibtn').onclick=()=>{const bits=['✨','🎛️','🧠','🎨','🎵','[sticker: tiny dramatic narrator]','[gif: neon pen sparkle loop]'];
   box.value+=(box.value?' ':'')+bits[Math.floor(Math.random()*bits.length)];box.focus();};
 
@@ -4310,6 +4483,10 @@ class Handler(BaseHTTPRequestHandler):
             if not user:
                 self._json(401, {"error": "login required", "code": "AUTH"}); return
             self._json(200, _self_code_summary())
+        elif path == "/api/voice/status":
+            # Public: tells the UI whether to use ElevenLabs or fall back to browser TTS.
+            self._json(200, {"enabled": eleven_enabled(),
+                             "voice": eleven_voice_name()})
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -4317,6 +4494,18 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
+            if self.path == "/api/tts":
+                # Speak text in VOKK's ElevenLabs voice. 503 (not error) when no key,
+                # so the browser cleanly falls back to its built-in voice.
+                if not eleven_enabled():
+                    self._json(503, {"error": "voice unavailable", "code": "NO_VOICE_KEY"}); return
+                try:
+                    audio = eleven_tts(payload.get("text") or "")
+                except Exception as e:
+                    self._json(502, {"error": "tts failed", "detail": str(e)[:200]}); return
+                if not audio:
+                    self._json(503, {"error": "voice unavailable", "code": "NO_VOICE"}); return
+                self._send(200, audio, "audio/mpeg"); return
             if self.path == "/api/auth/register":
                 email = (payload.get("email") or "").strip().lower()
                 password = payload.get("password") or ""
@@ -4575,7 +4764,8 @@ class Handler(BaseHTTPRequestHandler):
                     "\n\n[Model preset: Chat]\n"
                     "Sound like a real person, not a corporate explainer. Be lightly funny when it fits, use relatable everyday comparisons, "
                     "and if there is a strange-but-true angle most people miss, include it. Keep it natural. Mild profanity or blunt phrasing is fine "
-                    "when it matches the user's tone and the request is harmless. Do not become a comedian."
+                    "when it matches the user's tone and the request is harmless. For blunt opinion questions, start a little more human and conversational: "
+                    "a quick reaction first, then a small pullback, then the actual point. Do not become a comedian."
                 )
             elif model_preset == "reasoning":
                 generation_prompt += "\n\n[Model preset: Reasoning]\nAnswer in clear multi-step form. Use bounded self-debate internally, show only the final synthesis, and be explicit about any unresolved uncertainty."
