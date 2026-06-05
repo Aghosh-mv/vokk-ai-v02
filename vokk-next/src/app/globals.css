@@ -1,0 +1,650 @@
+@import "tailwindcss";
+
+:root {
+  --background: #0f0e12;
+  --foreground: #f3efe6;
+  --panel: rgba(255, 255, 255, 0.08);
+  --panel-strong: rgba(255, 255, 255, 0.12);
+  --border: rgba(255, 255, 255, 0.12);
+  --muted: rgba(243, 239, 230, 0.62);
+  --accent: #8de1ff;
+  --accent-2: #f7b2ff;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+  background:
+    radial-gradient(circle at top, rgba(141, 225, 255, 0.12), transparent 32%),
+    linear-gradient(180deg, #131218, #0d0c10 58%, #0a0a0d);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+  min-height: 100vh;
+}
+
+html[data-theme="light"] body,
+.lightMode {
+  --background: #f4efe6;
+  --foreground: #231f18;
+  --panel: rgba(255, 255, 255, 0.7);
+  --panel-strong: rgba(255, 255, 255, 0.82);
+  --border: rgba(70, 52, 20, 0.12);
+  --muted: rgba(35, 31, 24, 0.6);
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+.vokk-shell {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.rail {
+  border-right: 1px solid var(--border);
+  background: rgba(8, 8, 11, 0.66);
+  backdrop-filter: blur(24px) saturate(140%);
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brandMark {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, rgba(141, 225, 255, 0.24), rgba(247, 178, 255, 0.22));
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  font-weight: 700;
+}
+
+.brandTitle {
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.brandSub,
+.statusMeta,
+.sessionTime,
+.eyebrow {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.fieldLabel,
+.sectionTitle,
+.panelTitle {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: lowercase;
+}
+
+.textInput,
+.promptBox {
+  width: 100%;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--foreground);
+  border-radius: 10px;
+  padding: 12px 14px;
+  outline: none;
+}
+
+.textInput:focus,
+.promptBox:focus {
+  border-color: rgba(141, 225, 255, 0.55);
+  box-shadow: 0 0 0 3px rgba(141, 225, 255, 0.14);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sessionList,
+.pillRow,
+.chipRow,
+.composerRow,
+.modeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.sessionCard,
+.modeBtn,
+.chip,
+.pill,
+.primaryBtn,
+.ghostBtn {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--foreground);
+  border-radius: 10px;
+}
+
+.sessionCard {
+  text-align: left;
+  padding: 12px;
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.statusCard,
+.heroPanel,
+.chatPanel,
+.miniPanel,
+.bridgePanel,
+.noteCard,
+.replyCard {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  backdrop-filter: blur(24px) saturate(140%);
+  border-radius: 14px;
+}
+
+.statusCard {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.statusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #756e6e;
+}
+
+.statusDot.on {
+  background: #80ffbf;
+  box-shadow: 0 0 16px rgba(128, 255, 191, 0.55);
+}
+
+.statusTitle {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pill,
+.chip,
+.modeBtn,
+.primaryBtn,
+.ghostBtn,
+.ghostLink {
+  padding: 10px 12px;
+}
+
+.pill {
+  font-size: 12px;
+  color: #d7fbff;
+}
+
+.workspace {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.topbar {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.topbar h1 {
+  margin: 6px 0 0;
+  font-size: clamp(28px, 4vw, 44px);
+  line-height: 1.05;
+}
+
+.modeBtn.active,
+.primaryBtn {
+  background: linear-gradient(135deg, rgba(141, 225, 255, 0.26), rgba(247, 178, 255, 0.2));
+}
+
+.heroPanel,
+.chatPanel,
+.miniPanel,
+.bridgePanel,
+.replyCard,
+.noteCard {
+  padding: 18px;
+}
+
+.heroPanel p {
+  margin-top: 0;
+  color: var(--muted);
+  max-width: 72ch;
+}
+
+.chip {
+  text-align: left;
+}
+
+.chatGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+  gap: 18px;
+}
+
+.chatPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.messageStream {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 320px;
+  max-height: 56vh;
+  overflow: auto;
+  padding-right: 6px;
+}
+
+.bubble {
+  padding: 14px 16px;
+  border-radius: 14px;
+  max-width: 90%;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+
+.bubble.me {
+  align-self: flex-end;
+  background: rgba(141, 225, 255, 0.12);
+}
+
+.bubble.ai {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.bubble.ai.blocked {
+  border-color: rgba(255, 120, 120, 0.35);
+}
+
+.bubbleMeta,
+.bubbleSub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bubbleMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.bubbleText {
+  white-space: pre-wrap;
+}
+
+.bubbleSub {
+  margin-top: 8px;
+}
+
+.composerTop {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.miniToggle,
+.modelSelect,
+.thinkingToggle,
+.searchInput,
+.newChatBtn,
+.navBtn {
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--foreground);
+  border-radius: 10px;
+}
+
+.miniToggle,
+.newChatBtn,
+.navBtn {
+  padding: 10px 12px;
+}
+
+.miniToggle.active,
+.newChatBtn,
+.navBtn.active,
+.ghostLink:hover {
+  background: linear-gradient(135deg, rgba(141, 225, 255, 0.22), rgba(247, 178, 255, 0.14));
+}
+
+.thinkingToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.modelSelect,
+.searchInput {
+  padding: 11px 12px;
+}
+
+.newChatBtn {
+  font-weight: 700;
+}
+
+.navGroup,
+.sideActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sideListWrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  flex: 1;
+}
+
+.sideListLabel {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.sideList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  min-height: 180px;
+}
+
+.sideCard {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.sideCard p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.emptyState {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.promptBox {
+  min-height: 140px;
+  resize: vertical;
+}
+
+.primaryBtn,
+.ghostBtn {
+  cursor: pointer;
+}
+
+.ghostBtn {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ghostLink {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  color: var(--foreground);
+}
+
+.sidePanels {
+  display: grid;
+  gap: 18px;
+}
+
+.previewBox,
+.todoList {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.noteCard {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.todoList {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.replyCard {
+  display: grid;
+  gap: 10px;
+}
+
+.replyError {
+  border-color: rgba(255, 120, 120, 0.4);
+}
+
+.replyMeta,
+.bridgeActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.replyMeta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.replyText {
+  white-space: pre-wrap;
+  line-height: 1.65;
+}
+
+.replyReason,
+.bridgeMeta {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.bridgePanel {
+  display: grid;
+  gap: 16px;
+  min-height: 70vh;
+}
+
+.bridgeHeader {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.vokkFrame {
+  width: 100%;
+  min-height: 72vh;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: #0d0c10;
+}
+
+.loginGate {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(8, 8, 11, 0.48);
+  backdrop-filter: blur(14px);
+  z-index: 40;
+}
+
+.loginGate.show {
+  display: flex;
+}
+
+.loginBox {
+  width: min(760px, 100%);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-strong);
+  backdrop-filter: blur(24px) saturate(160%);
+  padding: 24px;
+  display: grid;
+  gap: 14px;
+}
+
+.loginHead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.loginHead h2 {
+  margin: 0;
+  font-size: 24px;
+}
+
+.loginHead p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.authGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.authOpt {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--foreground);
+  padding: 12px;
+  text-align: left;
+  font-weight: 700;
+}
+
+.authOpt span {
+  display: block;
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+.authOpt.selected {
+  outline: 2px solid rgba(141, 225, 255, 0.65);
+}
+
+.qrRow,
+.authRow {
+  display: flex;
+  gap: 10px;
+}
+
+.qrBlock {
+  width: 82px;
+  height: 82px;
+  border-radius: 12px;
+  flex: 0 0 auto;
+  background:
+    linear-gradient(90deg, var(--foreground) 9px, transparent 0) 0 0 / 22px 22px,
+    linear-gradient(var(--foreground) 9px, transparent 0) 0 0 / 22px 22px,
+    rgba(255, 255, 255, 0.08);
+}
+
+.qrCopy,
+.authMsg {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+@media (max-width: 980px) {
+  .vokk-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .rail {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .chatGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .bridgeHeader {
+    align-items: start;
+    flex-direction: column;
+  }
+
+  .authGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .authRow,
+  .qrRow {
+    flex-direction: column;
+  }
+}

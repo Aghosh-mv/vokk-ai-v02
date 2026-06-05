@@ -235,6 +235,23 @@ def init_auth_db():
                 FOREIGN KEY(user_id) REFERENCES users(id)
             )
         """)
+        # VOKK's OWN API keys (vok_...): let users call VOKK programmatically.
+        # Distinct from api_key_refs (which holds users' external provider keys).
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS vokk_issued_keys (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                label TEXT NOT NULL,
+                key_prefix TEXT NOT NULL,
+                key_hash TEXT NOT NULL UNIQUE,
+                quota_daily INTEGER NOT NULL,
+                used_today INTEGER NOT NULL DEFAULT 0,
+                used_date TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                revoked_at REAL,
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """)
         conn.commit()
 
 
@@ -295,6 +312,96 @@ def _store_user_api_key(user_id: int, provider: str, label: str, key: str) -> Di
         )
         conn.commit()
     return {"id": cur.lastrowid, "provider": provider, "label": label, "key_prefix": prefix}
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# VOKK's own API keys (vok_...): self-serve, free tier with daily quota.
+# Users mint these in-app to call VOKK programmatically via /api/v1/chat.
+# ─────────────────────────────────────────────────────────────────────────
+VOKK_FREE_DAILY_QUOTA = 50      # requests/day on the free tier
+VOKK_MAX_KEYS_PER_USER = 5      # active (non-revoked) keys per user
+
+
+def _hash_vokk_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _issue_vokk_key(user_id: int, label: str) -> Dict[str, Any]:
+    label = (label or "").strip()[:80] or "default"
+    with _auth_db() as conn:
+        active = conn.execute(
+            "SELECT COUNT(*) AS n FROM vokk_issued_keys WHERE user_id=? AND revoked_at IS NULL",
+            (user_id,),
+        ).fetchone()["n"]
+        if active >= VOKK_MAX_KEYS_PER_USER:
+            raise ValueError(f"free tier allows up to {VOKK_MAX_KEYS_PER_USER} active keys; revoke one first")
+        raw = "vok_" + secrets.token_urlsafe(24)
+        prefix = raw[:8] + "…" + raw[-4:]
+        conn.execute(
+            "INSERT INTO vokk_issued_keys (user_id,label,key_prefix,key_hash,quota_daily,used_today,used_date,created_at) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (user_id, label, prefix, _hash_vokk_key(raw), VOKK_FREE_DAILY_QUOTA, 0, "", time.time()),
+        )
+        conn.commit()
+    # The raw key is returned exactly ONCE; only its hash is stored.
+    return {"key": raw, "key_prefix": prefix, "label": label,
+            "quota_daily": VOKK_FREE_DAILY_QUOTA, "tier": "free"}
+
+
+def _list_vokk_keys(user_id: int) -> List[Dict[str, Any]]:
+    today = time.strftime("%Y-%m-%d")
+    with _auth_db() as conn:
+        rows = conn.execute(
+            "SELECT id,label,key_prefix,quota_daily,used_today,used_date,created_at,revoked_at "
+            "FROM vokk_issued_keys WHERE user_id=? ORDER BY created_at DESC",
+            (user_id,),
+        ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        used = d["used_today"] if d["used_date"] == today else 0
+        d["used_today"] = used
+        d["remaining_today"] = max(0, d["quota_daily"] - used) if not d["revoked_at"] else 0
+        d["active"] = d["revoked_at"] is None
+        out.append(d)
+    return out
+
+
+def _revoke_vokk_key(user_id: int, key_id: int) -> bool:
+    with _auth_db() as conn:
+        cur = conn.execute(
+            "UPDATE vokk_issued_keys SET revoked_at=? WHERE id=? AND user_id=? AND revoked_at IS NULL",
+            (time.time(), key_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def _auth_vokk_key(raw: str) -> Dict[str, Any]:
+    """Authenticate a vok_ key and consume one unit of daily quota.
+    Returns {user_id, key_id, remaining_today}. Raises PermissionError on failure."""
+    raw = (raw or "").strip()
+    if not raw.startswith("vok_"):
+        raise PermissionError("invalid API key")
+    key_hash = _hash_vokk_key(raw)
+    today = time.strftime("%Y-%m-%d")
+    with _auth_db() as conn:
+        row = conn.execute(
+            "SELECT id,user_id,quota_daily,used_today,used_date,revoked_at FROM vokk_issued_keys WHERE key_hash=?",
+            (key_hash,),
+        ).fetchone()
+        if not row or row["revoked_at"] is not None:
+            raise PermissionError("invalid or revoked API key")
+        used = row["used_today"] if row["used_date"] == today else 0
+        if used >= row["quota_daily"]:
+            raise PermissionError(f"daily quota of {row['quota_daily']} requests reached; resets at UTC midnight")
+        conn.execute(
+            "UPDATE vokk_issued_keys SET used_today=?, used_date=? WHERE id=?",
+            (used + 1, today, row["id"]),
+        )
+        conn.commit()
+        return {"user_id": row["user_id"], "key_id": row["id"],
+                "remaining_today": row["quota_daily"] - (used + 1)}
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -3382,10 +3489,12 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
     <div class="dock"><div class="pluswrap"><button class="plusbtn" id="plusbtn" title="Tools">+</button>
       <div class="plusmenu" id="plusmenu">
         <button data-tool="voice">Voice: read last answer</button>
+        <button data-tool="upload">Upload: attach a file</button>
         <button data-tool="image">Image: ask Canvas</button>
         <button data-tool="video">Video: cartoon pre-alpha</button>
         <button data-tool="sticker">Stickers / GIF text</button>
         <button data-tool="wake">Wake word: hey VOKK</button>
+        <input type="file" id="fileinput" style="display:none">
         <div class="modelpick">
           <label for="modelpreset">Model</label>
           <select id="modelpreset">
@@ -3501,6 +3610,17 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
       <label class="perm"><input type="checkbox" id="keyack"> I understand API keys can spend quota/money and should be rotated if leaked.</label>
       <div class="dorow"><button class="mini" id="keysave">Store key ref</button><button class="mini" id="keylist">List key refs</button></div>
       <div class="terminal" id="keyout"></div>
+    </div>
+    <div class="dopanel" id="vokkapipanel">
+      <h3>VOKK API — your free key</h3>
+      <p class="dosub" style="margin:0 0 8px">Create a key to call VOKK from your own code. Free tier: <b>50 requests/day</b>, up to <b>5 keys</b>. The key is shown once — copy it.</p>
+      <input id="vkapilabel" placeholder="label, e.g. my-bot">
+      <div class="dorow"><button class="primary" id="vkapicreate" style="min-height:36px">Create free key</button>
+        <button class="mini" id="vkapilist">My keys</button></div>
+      <div class="terminal" id="vkapiout"></div>
+      <pre class="terminal" id="vkapiusage" style="margin-top:8px;white-space:pre-wrap">POST /api/v1/chat
+Authorization: Bearer vok_your_key
+{ "prompt": "hello vokk" }</pre>
     </div>
   </div>
 </section>
@@ -3715,17 +3835,75 @@ $('keylist').onclick=async()=>{
   const r=await fetch('/api/api-keys');const j=await readJsonSafe(r,'key list');$('keyout').textContent=JSON.stringify(j,null,2);
 };
 
+/* VOKK API: create/list/revoke VOKK's OWN keys (vok_...) for programmatic access. */
+function renderVokkKeys(j){
+  const keys=j.keys||[];
+  if(!keys.length){$('vkapiout').textContent='No VOKK API keys yet. Create one above.';return;}
+  $('vkapiout').textContent=keys.map(k=>
+    (k.active?'● ':'○ ')+k.key_prefix+'  "'+k.label+'"  '+
+    (k.active?('used '+k.used_today+'/'+k.quota_daily+' today'):'revoked')+
+    (k.active?'   [revoke id '+k.id+']':'')
+  ).join('\n')+'\n\nRevoke with: click an id below.';
+  // clickable revoke
+  const box=$('vkapiout');box.style.cursor='default';
+}
+$('vkapicreate').onclick=async()=>{
+  if(!auth){refreshAuth();return;}
+  const r=await fetch('/api/keys/create',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({label:$('vkapilabel').value||'default'})});
+  const j=await readJsonSafe(r,'create key');
+  if(j.error){$('vkapiout').textContent='Error: '+j.error;return;}
+  $('vkapiout').textContent='✔ Your new key (copy now — shown once):\n\n'+j.key+'\n\nTier: '+j.tier+' · '+j.quota_daily+'/day';
+  $('vkapilabel').value='';
+};
+$('vkapilist').onclick=async()=>{
+  if(!auth){refreshAuth();return;}
+  const r=await fetch('/api/keys/list');const j=await readJsonSafe(r,'list keys');
+  if(j.error){$('vkapiout').textContent='Error: '+j.error;return;}
+  renderVokkKeys(j);
+};
+async function revokeVokkKey(id){
+  const r=await fetch('/api/keys/revoke',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+  const j=await readJsonSafe(r,'revoke');$('vkapilist').click();
+}
+
 /* plus tools: voice/image/video/stickers */
 $('plusbtn').onclick=e=>{e.stopPropagation();$('plusmenu').classList.toggle('open');};
 document.addEventListener('click',()=>{$('plusmenu').classList.remove('open');});
 document.querySelectorAll('#plusmenu button[data-tool]').forEach(b=>b.onclick=e=>{
   e.stopPropagation();const tool=b.dataset.tool;$('plusmenu').classList.remove('open');
   if(tool==='voice'){$('voicebtn').click();return;}
+  if(tool==='upload'){$('fileinput').click();return;}
   if(tool==='image'){box.value=(box.value?box.value+' ':'')+'Draw an image of ';box.focus();return;}
   if(tool==='video'){box.value=(box.value?box.value+' ':'')+'Make a cartoon video of ';box.focus();return;}
   if(tool==='sticker'){$('stickerbar').classList.toggle('open');box.focus();}
   if(tool==='wake'){$('wakebtn').click();return;}
 });
+/* File upload: read text files locally; route binary through /api/upload. The
+   extracted text is attached to the prompt box so VOKK can use the file. */
+$('fileinput').onchange=async()=>{
+  const f=$('fileinput').files[0];if(!f)return;
+  $('hint').textContent='Reading '+f.name+'…';
+  const textLike=/^(text\/|application\/(json|xml|javascript|x-yaml|x-sh))/.test(f.type)||/\.(txt|md|json|csv|js|ts|py|html|css|xml|yaml|yml|log|vokk)$/i.test(f.name);
+  try{
+    let text='';
+    if(textLike||f.size<200000){ text=await f.text(); }
+    else{
+      const buf=await f.arrayBuffer();
+      const b64=btoa(String.fromCharCode.apply(null,new Uint8Array(buf).subarray(0,1500000)));
+      const r=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({name:f.name,content_b64:b64})});
+      const j=await readJsonSafe(r,'upload');
+      if(j.binary){$('hint').textContent=f.name+' attached (binary, '+(j.bytes||0)+' bytes) — VOKK can\'t read its contents.';$('fileinput').value='';return;}
+      text=j.text||'';
+    }
+    const snippet=text.slice(0,100000);
+    box.value=(box.value?box.value+'\n\n':'')+'[Attached file: '+f.name+']\n--- file start ---\n'+snippet+'\n--- file end ---\n';
+    box.style.height='auto';box.style.height=Math.min(box.scrollHeight,260)+'px';box.focus();
+    $('hint').textContent='Attached '+f.name+' ('+snippet.length+' chars). Add your question and send.';
+  }catch(err){$('hint').textContent='Could not read '+f.name+': '+err.message;}
+  $('fileinput').value='';
+};
 document.querySelectorAll('.sticker').forEach(s=>s.onclick=()=>{box.value+=(box.value?' ':'')+s.textContent;box.focus();});
 document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key==='>'){e.preventDefault();$('stickerbar').classList.toggle('open');}});
 const modelNames={chat:'Chat',agent:'Agent',web:'Web',scrapegraph:'ScrapeGraph',graphrag:'GraphRAG',agenticrag:'AgenticRAG',selfrag:'SelfRAG',reasoning:'Reasoning',vokkv01:'VOKKv01',vokkv02:'VOKKv02',
@@ -4487,6 +4665,13 @@ class Handler(BaseHTTPRequestHandler):
             # Public: tells the UI whether to use ElevenLabs or fall back to browser TTS.
             self._json(200, {"enabled": eleven_enabled(),
                              "voice": eleven_voice_name()})
+        elif path == "/api/keys/list":
+            user = self._current_user()
+            if not user:
+                self._json(401, {"error": "login required", "code": "AUTH"}); return
+            self._json(200, {"keys": _list_vokk_keys(user["id"]),
+                             "free_daily_quota": VOKK_FREE_DAILY_QUOTA,
+                             "max_keys": VOKK_MAX_KEYS_PER_USER})
         else:
             self._send(404, json.dumps({"error": "not found"}))
 
@@ -4506,6 +4691,55 @@ class Handler(BaseHTTPRequestHandler):
                 if not audio:
                     self._json(503, {"error": "voice unavailable", "code": "NO_VOICE"}); return
                 self._send(200, audio, "audio/mpeg"); return
+
+            if self.path == "/api/v1/chat":
+                # PUBLIC programmatic API. Auth via VOKK-issued key (vok_...):
+                #   Authorization: Bearer vok_...   OR   {"api_key":"vok_..."} in body.
+                auth_header = self.headers.get("Authorization", "")
+                raw_key = (auth_header.split(" ", 1)[1].strip()
+                           if auth_header.lower().startswith("bearer ") else (payload.get("api_key") or ""))
+                try:
+                    auth = _auth_vokk_key(raw_key)
+                except PermissionError as e:
+                    self._json(401, {"error": str(e), "code": "API_KEY"}); return
+                prompt = (payload.get("prompt") or payload.get("message") or "").strip()
+                if not prompt:
+                    self._json(400, {"error": "prompt required"}); return
+                mode = (payload.get("mode") or "chat").strip()
+                try:
+                    out = RESPONSE_GENERATOR.generate(prompt, user=f"apikey:{auth['key_id']}", mode=mode)
+                except Exception as e:
+                    self._json(502, {"error": "generation failed", "detail": str(e)[:200]}); return
+                self._json(200, {
+                    "response": out.get("response", ""),
+                    "brain_used": out.get("brain_used"),
+                    "task_class": out.get("task_class"),
+                    "live": out.get("live"),
+                    "quota": {"remaining_today": auth["remaining_today"], "daily": VOKK_FREE_DAILY_QUOTA},
+                }); return
+
+            if self.path == "/api/upload":
+                # Accept a file as base64 (or inline text). Returns extracted text the
+                # client can attach to the next prompt. Login or guest both allowed.
+                name = (payload.get("name") or "file").strip()[:200]
+                b64 = payload.get("content_b64")
+                text = payload.get("text")
+                try:
+                    if b64:
+                        import base64 as _b64
+                        data = _b64.b64decode(b64)[:2_000_000]   # 2MB cap
+                        try:
+                            text = data.decode("utf-8")
+                        except UnicodeDecodeError:
+                            self._json(200, {"ok": True, "name": name, "binary": True,
+                                             "bytes": len(data), "text": "",
+                                             "note": "binary file received; text extraction not supported here"}); return
+                    text = (text or "")[:200_000]
+                except Exception as e:
+                    self._json(400, {"error": "could not read file", "detail": str(e)[:200]}); return
+                self._json(200, {"ok": True, "name": name, "binary": False,
+                                 "chars": len(text), "text": text}); return
+
             if self.path == "/api/auth/register":
                 email = (payload.get("email") or "").strip().lower()
                 password = payload.get("password") or ""
@@ -4649,6 +4883,26 @@ class Handler(BaseHTTPRequestHandler):
                 provider = (payload.get("provider") or "provider").strip()
                 label = (payload.get("label") or provider).strip()
                 self._json(200, {"ok": True, "key_ref": _store_user_api_key(user["id"], provider, label, key)}); return
+
+            if self.path == "/api/keys/create":
+                # Mint a VOKK API key (vok_...) for programmatic access. Free tier.
+                try:
+                    issued = _issue_vokk_key(user["id"], payload.get("label") or "default")
+                except ValueError as e:
+                    self._json(400, {"error": str(e)}); return
+                self._json(200, {"ok": True, **issued,
+                                 "note": "Copy this key now — it is shown only once. Use it as: Authorization: Bearer <key> on POST /api/v1/chat"}); return
+
+            if self.path == "/api/keys/revoke":
+                kid = payload.get("id")
+                if not isinstance(kid, int):
+                    try:
+                        kid = int(kid)
+                    except Exception:
+                        self._json(400, {"error": "numeric key id required"}); return
+                ok = _revoke_vokk_key(user["id"], kid)
+                self._json(200 if ok else 404, {"ok": ok,
+                           "error": None if ok else "key not found or already revoked"}); return
 
             if self.path == "/api/continue":
                 prompt = (payload.get("prompt") or "").strip()
