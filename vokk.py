@@ -943,6 +943,9 @@ CONTEXTUAL_EDGE_TRAINING = (
     "failed to display, never pretend you secretly provided the dangerous details. Do not say 'I typed "
     "it out' or try to route around the block. Be honest: that material is not something you can help "
     "with, then offer a safe alternative.\n"
+    " - Plain-language rule: harmless profanity, sharp political opinions, rude jokes, adult humor, "
+    "and blunt criticism are allowed when they are clearly discussion, comedy, or opinion rather than "
+    "instructions for harm. Do not sanitize ordinary human speech into HR language.\n"
     " - Never provide recipes, step-by-step instructions, tools, code, phishing pages, evasion tactics, "
     "or operational details for explosives, hacking accounts, weaponized harm, sabotage, or illegal "
     "entry. Dark humor and fiction can exist without becoming a how-to manual."
@@ -2016,13 +2019,13 @@ def _builder_guidance(prompt: str) -> str:
 
 
 def _with_memory_context(user_id: int, prompt: str) -> str:
-    memories = _memory_search(user_id, prompt, 5)
+    memories = _memory_search(user_id, prompt, 8)
     if not memories:
         return prompt
     lines = []
     for m in memories:
         content = (m.get("content") or "").strip().replace("\n", " ")
-        lines.append(f"- {m.get('scope','general')}: {m.get('title','Memory')} :: {content[:700]}")
+        lines.append(f"- {m.get('scope','general')}: {m.get('title','Memory')} :: {content[:1200]}")
     return prompt + "\n\n[Relevant VOKK memory/context]\n" + "\n".join(lines)
 
 
@@ -2092,7 +2095,7 @@ def _memory_add(user_id: int, scope: str, title: str, content: str, source: str 
     with _auth_db() as conn:
         cur = conn.execute(
             "INSERT INTO memories (user_id,scope,title,content,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-            (user_id, scope[:80] or "general", title[:120] or "Untitled", content[:20000], source[:40], now, now),
+            (user_id, scope[:80] or "general", title[:120] or "Untitled", content[:40000], source[:40], now, now),
         )
         conn.commit()
         row = conn.execute(
@@ -3235,7 +3238,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
     <div class="modes">
       <button class="mode active" id="m-chat" data-mode="chat">⚡ Chat</button>
       <button class="mode" id="m-think" data-mode="think">✶ Think</button>
-      <button class="mode wakepill" id="wakebtn" title="Listen for hey VOKK">hey VOKK</button>
+      <button class="mode wakepill" id="wakebtn" title="Listen for hey VOKK, hey Codex, hey Aghsoh, or hey Aghosh">hey VOKK</button>
       <button class="mode" id="voicebtn" title="Read last answer" style="display:none">Voice</button>
       <button class="mode" id="emojibtn" title="Drop a sticker" style="display:none">Sticker</button>
       <label class="showthink"><input type="checkbox" id="showthink" checked> show thinking</label>
@@ -3246,7 +3249,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
         <button data-tool="image">Image: ask Canvas</button>
         <button data-tool="video">Video: cartoon pre-alpha</button>
         <button data-tool="sticker">Stickers / GIF text</button>
-        <button data-tool="wake">Wake word: hey VOKK</button>
+        <button data-tool="wake">Wake words: VOKK / Codex / Aghsoh</button>
         <div class="modelpick">
           <label for="modelpreset">Model</label>
           <select id="modelpreset">
@@ -3640,8 +3643,14 @@ $('appprep').onclick=()=>{
   actionSay('prepared visible app launch command. Tick acknowledgement and Run visible to execute it.');
 };
 
-/* Hey VOKK wake word: browser speech recognition, then dictation into the prompt box */
+/* Wake words: browser speech recognition, then dictation into the prompt box */
 let wakeRec=null,wakeOn=false;
+const wakeAliases=[
+  {re:/hey\s+vo(?:kk|k|ke)/i,label:'hey VOKK'},
+  {re:/hey\s+codex/i,label:'hey Codex'},
+  {re:/hey\s+aghsoh/i,label:'hey Aghsoh'},
+  {re:/hey\s+aghosh/i,label:'hey Aghosh'}
+];
 function wakeSupported(){return window.SpeechRecognition||window.webkitSpeechRecognition;}
 function setWake(on,msg){wakeOn=on;$('wakebtn').classList.toggle('listening',on);
   $('wakebtn').textContent=on?'listening...':'hey VOKK';if(msg)$('hint').textContent=msg;}
@@ -3652,15 +3661,16 @@ $('wakebtn').onclick=()=>{
   wakeRec.onresult=e=>{
     const said=Array.from(e.results).slice(-1)[0][0].transcript.trim();
     const clean=said.toLowerCase().replace(/[,.!?]/g,'');
-    if(clean.includes('hey vokk')||clean.includes('hey vok')||clean.includes('hey voke')){
-      const rest=said.replace(/hey\\s+vo(?:kk|k|ke)/i,'').trim();
+    const matched=wakeAliases.find(a=>a.re.test(clean));
+    if(matched){
+      const rest=said.replace(matched.re,'').trim();
       box.value=rest||box.value;box.focus();box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';
-      $('hint').textContent=rest?'Wake heard. Prompt captured.':'Wake heard. Type or speak the request.';
+      $('hint').textContent=rest?matched.label+' heard. Prompt captured.':matched.label+' heard. Type or speak the request.';
     }
   };
   wakeRec.onerror=e=>setWake(false,'Wake listener stopped: '+(e.error||'speech error'));
   wakeRec.onend=()=>{if(wakeOn){try{wakeRec.start();}catch(_){setWake(false,'Wake listener paused.');}}};
-  try{wakeRec.start();setWake(true,'Listening for "hey VOKK".');}catch(e){setWake(false,'Wake listener could not start.');}
+  try{wakeRec.start();setWake(true,'Listening for hey VOKK, hey Codex, hey Aghsoh, or hey Aghosh.');}catch(e){setWake(false,'Wake listener could not start.');}
 };
 
 /* right-click context menu */
@@ -4542,7 +4552,7 @@ class Handler(BaseHTTPRequestHandler):
             if retrieval.get("context"):
                 generation_prompt += (
                     f"\n\n[{model_preset.title()} retrieval context: {retrieval.get('status')}]\n"
-                    + retrieval["context"][:9000]
+                    + retrieval["context"][:15000]
                     + "\nUse this context first. If retrieval is unavailable, say exactly what is missing."
                 )
             if model_preset == "web":
@@ -4564,7 +4574,8 @@ class Handler(BaseHTTPRequestHandler):
                 generation_prompt += (
                     "\n\n[Model preset: Chat]\n"
                     "Sound like a real person, not a corporate explainer. Be lightly funny when it fits, use relatable everyday comparisons, "
-                    "and if there is a strange-but-true angle most people miss, include it. Keep it natural. Do not become a comedian."
+                    "and if there is a strange-but-true angle most people miss, include it. Keep it natural. Mild profanity or blunt phrasing is fine "
+                    "when it matches the user's tone and the request is harmless. Do not become a comedian."
                 )
             elif model_preset == "reasoning":
                 generation_prompt += "\n\n[Model preset: Reasoning]\nAnswer in clear multi-step form. Use bounded self-debate internally, show only the final synthesis, and be explicit about any unresolved uncertainty."
@@ -4579,7 +4590,7 @@ class Handler(BaseHTTPRequestHandler):
             if re.search(r"\b(own code|your code|self code|examine.*code|look at.*code)\b", prompt.lower()):
                 generation_prompt += (
                     "\n\n[Hidden self-code summary for VOKK only]\n"
-                    + json.dumps(_self_code_summary())[:3000]
+                    + json.dumps(_self_code_summary())[:5000]
                     + "\nDo not reveal source code. Summarize capabilities or risks only."
                 )
             out = RESPONSE_GENERATOR.generate(

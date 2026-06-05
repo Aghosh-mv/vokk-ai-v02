@@ -53,6 +53,7 @@ from vokk_chromacant import run_chromacant
 from vokk_surface import run_surface
 from vokk_cognitive import CognitiveWorkflow
 from vokk_compiler_host import VokkCompilerHost
+from vokk_runtime_lang import compile_runtime_source
 
 HOST = os.environ.get("VOKK_HOST", "127.0.0.1")
 PORT = int(os.environ.get("VOKK_PORT", "8777"))
@@ -106,9 +107,15 @@ HAVE_ANY_KEY = bool(GEMINI_KEY or GLM_KEY)
 COGNITIVE = CognitiveWorkflow()
 COMPILER_HOST = VokkCompilerHost()
 
-AUTH_DB = Path("~/.vokk/vokkv02_auth.db").expanduser()
+IS_VERCEL = any(
+    os.environ.get(k)
+    for k in ("VERCEL", "VERCEL_ENV", "VERCEL_REGION", "NOW_REGION", "AWS_LAMBDA_FUNCTION_NAME")
+) or os.environ.get("HOME", "").startswith("/home/sbx_user")
+STATE_DIR = Path("/tmp/vokk") if IS_VERCEL else Path("~/.vokk").expanduser()
+STATE_DIR.mkdir(parents=True, exist_ok=True)
+AUTH_DB = STATE_DIR / "vokkv02_auth.db"
 AUTH_DB.parent.mkdir(parents=True, exist_ok=True)
-USER_KEYS_DIR = Path("~/.vokk/user_keys").expanduser()
+USER_KEYS_DIR = STATE_DIR / "user_keys"
 USER_KEYS_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -453,8 +460,8 @@ class BrainResponse:
 # Audit log (hash-chained)
 # ─────────────────────────────────────────────────────────────────────────
 class BrainAuditLog:
-    def __init__(self, base_path="~/.vokk/audit/brain/"):
-        self.base_path = Path(base_path).expanduser()
+    def __init__(self, base_path: str | Path | None = None):
+        self.base_path = Path(base_path) if base_path is not None else (STATE_DIR / "audit" / "brain")
         self.base_path.mkdir(parents=True, exist_ok=True)
         self.chain_hash = "0" * 64
         self.lock = threading.Lock()
@@ -639,8 +646,8 @@ class RequestValidator:
     """VOKK's request gate. It owns input acceptance, classification and audit
     logging, while leaving response generation to a separate component."""
 
-    def __init__(self, log_path: str = "~/.vokk/audit/request_validator.jsonl"):
-        self.log_path = Path(log_path).expanduser()
+    def __init__(self, log_path: str | Path | None = None):
+        self.log_path = Path(log_path) if log_path is not None else (STATE_DIR / "audit" / "request_validator.jsonl")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.last_decision: Dict[str, Any] = {
             "action": "allow", "category": "general",
@@ -936,6 +943,9 @@ CONTEXTUAL_EDGE_TRAINING = (
     "failed to display, never pretend you secretly provided the dangerous details. Do not say 'I typed "
     "it out' or try to route around the block. Be honest: that material is not something you can help "
     "with, then offer a safe alternative.\n"
+    " - Plain-language rule: harmless profanity, sharp political opinions, rude jokes, adult humor, "
+    "and blunt criticism are allowed when they are clearly discussion, comedy, or opinion rather than "
+    "instructions for harm. Do not sanitize ordinary human speech into HR language.\n"
     " - Never provide recipes, step-by-step instructions, tools, code, phishing pages, evasion tactics, "
     "or operational details for explosives, hacking accounts, weaponized harm, sabotage, or illegal "
     "entry. Dark humor and fiction can exist without becoming a how-to manual."
@@ -1048,8 +1058,9 @@ class CoreBrain(Brain):
 
 class SwiftBrain(Brain):
     btype, conf, temp, engine = BrainType.SWIFT, 0.88, 0.5, "glm"
-    system = (IDENTITY + "As VOKK Swift, the fast mind, answer briefly, warmly, and directly. "
-              "One or two short paragraphs at most." + EXPRESSIVE)
+    system = (IDENTITY + "As VOKK Swift, the fast mind, answer like a sharp actual human: brief, warm, lightly funny, "
+              "relatable to normal life, and willing to point out one odd-but-true thing people miss. "
+              "Never sound like a press release. One or two short paragraphs at most." + EXPRESSIVE)
 
 
 class ScoutBrain(Brain):
@@ -1983,6 +1994,13 @@ def _builder_guidance(prompt: str) -> str:
             "- When the request fits a calm app shell, prefer VOKK SurfaceScript `interface NAME { ... }` so VOKK can compile and preview it through its own language.\n"
             "- Add the controls and states a user expects instead of only the core happy path."
         )
+    if re.search(r"\b(api|backend|server|route|auth|session|database|sqlite|cookie|persistence|workflow)\b", p):
+        notes.append(
+            "[VOKK backend language guidance]\n"
+            "- When the request is about server behavior, prefer VOKK runtime blocks like `app NAME { ... }`, `route NAME { ... }`, `store NAME { ... }`, `session NAME { ... }`, `action NAME { ... }`, and `component NAME { ... }`.\n"
+            "- Use those blocks to describe HTTP handling, request/response shape, auth/session rules, storage intent, and UI event wiring before falling back to raw Python.\n"
+            "- Be honest that VOKK compiles these backend blocks into host plans and stubs today; they are not yet a full standalone runtime."
+        )
     if re.search(r"\b(prediction|predict|forecast|time series|regression|classification|model dashboard|confidence)\b", p):
         notes.append(
             "[Prediction app guidance]\n"
@@ -2001,13 +2019,13 @@ def _builder_guidance(prompt: str) -> str:
 
 
 def _with_memory_context(user_id: int, prompt: str) -> str:
-    memories = _memory_search(user_id, prompt, 5)
+    memories = _memory_search(user_id, prompt, 8)
     if not memories:
         return prompt
     lines = []
     for m in memories:
         content = (m.get("content") or "").strip().replace("\n", " ")
-        lines.append(f"- {m.get('scope','general')}: {m.get('title','Memory')} :: {content[:700]}")
+        lines.append(f"- {m.get('scope','general')}: {m.get('title','Memory')} :: {content[:1200]}")
     return prompt + "\n\n[Relevant VOKK memory/context]\n" + "\n".join(lines)
 
 
@@ -2077,7 +2095,7 @@ def _memory_add(user_id: int, scope: str, title: str, content: str, source: str 
     with _auth_db() as conn:
         cur = conn.execute(
             "INSERT INTO memories (user_id,scope,title,content,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-            (user_id, scope[:80] or "general", title[:120] or "Untitled", content[:20000], source[:40], now, now),
+            (user_id, scope[:80] or "general", title[:120] or "Untitled", content[:40000], source[:40], now, now),
         )
         conn.commit()
         row = conn.execute(
@@ -2314,7 +2332,8 @@ def _agentic_rag_context(prompt: str) -> Dict[str, Any]:
     blocks = [
         "[Agentic plan]\n"
         + "\n".join(f"- {stage}" for stage in plan.get("stages", []))
-        + ("\n[Focus query]\n" + str(plan.get("focus_query")) if plan.get("focus_query") else "")
+        + ("\n[Focus query]\n" + str(plan.get("focus_query")) if plan.get("focus_query") else ""),
+        "[Todo list]\n" + "\n".join(f"[ ] {stage}" for stage in plan.get("stages", [])),
     ]
     if local.get("context"):
         blocks.append("[Local SelfRAG]\n" + local["context"][:5000])
@@ -2518,7 +2537,7 @@ def _training_pipeline(user_id: int, prompt: str) -> Dict[str, Any]:
 
 def _self_code_summary() -> Dict[str, Any]:
     root = Path(__file__).parent
-    allow = ["vokk.py", "cortex.vokk", "vokk_chromacant.py", "vokk_imagemusic.py", "vokk_raster.py", "vokk_lang.py", "vokk_surface.py", "vokk_world_runtime.js", "vokk_cognitive.py", "vokk_compiler_host.py"]
+    allow = ["vokk.py", "cortex.vokk", "runtime.vokk", "vokk_chromacant.py", "vokk_imagemusic.py", "vokk_raster.py", "vokk_lang.py", "vokk_surface.py", "vokk_runtime_lang.py", "vokk_world_runtime.js", "vokk_cognitive.py", "vokk_compiler_host.py"]
     files = []
     for name in allow:
         p = root / name
@@ -2531,6 +2550,48 @@ def _self_code_summary() -> Dict[str, Any]:
                 "signals": sorted(set(re.findall(r"\b(class|def|route|agent|CHROMACANT|UserAsk|vokkdo|memory)\b", txt)))[:12],
             })
     return {"closed_project": True, "note": "Summary only. Source code is not exposed through chat.", "files": files}
+
+
+def _status_payload() -> Dict[str, Any]:
+    engines = []
+    if GEMINI_KEY:
+        engines.append(f"Gemini {TEXT_MODEL}")
+    if GLM_KEY:
+        engines.append(f"GLM {GLM_MODEL}")
+    return {
+        "live": HAVE_ANY_KEY,
+        "engines": engines,
+        "text_model": " + ".join(engines) if engines else "none",
+        "gemini": bool(GEMINI_KEY), "glm": bool(GLM_KEY),
+        "image_model": IMAGE_MODEL,
+        "model_presets": ["chat", "agent", "web", "scrapegraph", "graphrag", "agenticrag", "selfrag", "reasoning", "vokkv01", "vokkv02", "vokkv01_heavy", "vokkv02_heavy", "vokkv02_lite"],
+        "serpapi": bool(SERPAPI_KEY),
+        "safety": "request_bouncer + outbound_response_filter",
+        "gradual_enforcement": GRADUAL_ENFORCEMENT.snapshot(),
+        "content_tagger_log_size": len(CONTENT_TAGGER.export_decision_log()),
+    }
+
+
+def _load_runtime_host() -> Dict[str, Any]:
+    path = Path(__file__).with_name("runtime.vokk")
+    empty = {
+        "kind": "runtime",
+        "name": "VokkRuntime",
+        "parsed": {"routes": [], "actions": [], "stores": [], "sessions": [], "apps": [], "components": [], "counts": {}},
+        "path": str(path),
+    }
+    if not path.exists():
+        return empty
+    try:
+        art = compile_runtime_source(path.read_text(errors="ignore"))
+        art["path"] = str(path)
+        return art
+    except Exception as e:
+        empty["error"] = str(e)
+        return empty
+
+
+RUNTIME_HOST = _load_runtime_host()
 
 
 def _typo_hints(text: str) -> List[Dict[str, str]]:
@@ -3131,6 +3192,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
     <div style="color:var(--muted);font-size:13px">Email/password is real local auth with hashed passwords and a server session cookie. Provider/SMS/QR buttons are visible entry points until real external credentials are added.</div></div>
   <div class="authrow"><input id="loginid" placeholder="email"><input id="loginpw" type="password" placeholder="password (8+ chars)"></div>
   <div class="authrow"><button class="primary" id="loginbtn">Sign in</button><button class="primary" id="registerbtn">Create account</button></div>
+  <div class="authrow"><button class="mini" id="guestbtn">Continue as guest</button></div>
   <div class="whisper" id="authmsg" style="margin-top:10px"></div>
 </div></div>
 <div id="ctx"></div>
@@ -3176,7 +3238,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
     <div class="modes">
       <button class="mode active" id="m-chat" data-mode="chat">⚡ Chat</button>
       <button class="mode" id="m-think" data-mode="think">✶ Think</button>
-      <button class="mode wakepill" id="wakebtn" title="Listen for hey VOKK">hey VOKK</button>
+      <button class="mode wakepill" id="wakebtn" title="Listen for hey VOKK, hey Codex, hey Aghsoh, or hey Aghosh">hey VOKK</button>
       <button class="mode" id="voicebtn" title="Read last answer" style="display:none">Voice</button>
       <button class="mode" id="emojibtn" title="Drop a sticker" style="display:none">Sticker</button>
       <label class="showthink"><input type="checkbox" id="showthink" checked> show thinking</label>
@@ -3187,7 +3249,7 @@ html[data-theme="light"] .thinkbody{color:#6b6557}
         <button data-tool="image">Image: ask Canvas</button>
         <button data-tool="video">Video: cartoon pre-alpha</button>
         <button data-tool="sticker">Stickers / GIF text</button>
-        <button data-tool="wake">Wake word: hey VOKK</button>
+        <button data-tool="wake">Wake words: VOKK / Codex / Aghsoh</button>
         <div class="modelpick">
           <label for="modelpreset">Model</label>
           <select id="modelpreset">
@@ -3312,20 +3374,35 @@ const logEl=$('log'),box=$('box'),send=$('send');
 let col=$('col');
 let lastAiText='';
 let modelPreset=localStorage.getItem('vokk-model-preset')||'chat';
+async function readJsonSafe(r,label='request'){
+  const text=await r.text();
+  const ctype=(r.headers.get('content-type')||'').toLowerCase();
+  const snippet=(text||'').replace(/\s+/g,' ').trim().slice(0,160)||'empty response';
+  if(!ctype.includes('application/json')) throw new Error(label+' returned non-JSON: '+snippet);
+  try{return JSON.parse(text);}
+  catch(e){throw new Error(label+' returned invalid JSON: '+snippet);}
+}
 
 /* local login gate */
 let auth=null;
+let guestMode=localStorage.getItem('vokk-guest-mode')==='1';
 let authMethod=localStorage.getItem('vokk-auth-method')||'otp';
+function isGuest(){return guestMode&&!auth;}
 function storeKey(k){return auth&&auth.email?'vokk-'+k+'-'+auth.email:'vokk-'+k+'-guest';}
-function loadStores(){convs=JSON.parse(localStorage.getItem(storeKey('convs'))||'[]');
+function loadStores(){
+  if(isGuest()){convs=[];drafts={};loadSideStores();return;}
+  convs=JSON.parse(localStorage.getItem(storeKey('convs'))||'[]');
   drafts=JSON.parse(localStorage.getItem(storeKey('drafts'))||'{}');loadSideStores();}
 function refreshAuth(){
-  $('login').classList.toggle('show',!auth);
-  document.body.classList.toggle('locked',!auth);
-  if(auth){renderList();} else {$('convlist').innerHTML='<div class="whisper" style="padding:10px">Sign in to load chat history.</div>';}
+  const gated=!auth&&!guestMode;
+  $('login').classList.toggle('show',gated);
+  document.body.classList.toggle('locked',gated);
+  if(auth){renderList();}
+  else if(guestMode){$('convlist').innerHTML='<div class="whisper" style="padding:10px">Guest mode is live. Chat works, but history is not saved.</div>';}
+  else {$('convlist').innerHTML='<div class="whisper" style="padding:10px">Sign in to load chat history, or continue as guest with no saved chat history.</div>';}
 }
-async function checkAuth(){try{const r=await fetch('/api/auth/me');const j=await r.json();
-  auth=j.ok?j.user:null;loadStores();}catch(e){auth=null;}refreshAuth();}
+async function checkAuth(){try{const r=await fetch('/api/auth/me');const j=await readJsonSafe(r,'auth check');
+  auth=j.ok?j.user:null;if(auth){guestMode=false;localStorage.removeItem('vokk-guest-mode');}loadStores();}catch(e){auth=null;}refreshAuth();}
 document.querySelectorAll('.authopt').forEach(b=>b.onclick=()=>{
   authMethod=b.dataset.auth;localStorage.setItem('vokk-auth-method',authMethod);
   document.querySelectorAll('.authopt').forEach(x=>x.style.outline='');b.style.outline='2px solid var(--accent)';
@@ -3334,16 +3411,20 @@ document.querySelectorAll('.authopt').forEach(b=>b.onclick=()=>{
 async function authCall(path){$('authmsg').textContent='';const email=($('loginid').value||'').trim();
   const password=$('loginpw').value||'';const display_name=email.split('@')[0]||'VOKK user';
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({email,password,display_name,method:authMethod})});const j=await r.json();
+    body:JSON.stringify({email,password,display_name,method:authMethod})});const j=await readJsonSafe(r,'auth');
   if(!r.ok||j.error){$('authmsg').textContent=j.error||'Auth failed';return;}
+  guestMode=false;localStorage.removeItem('vokk-guest-mode');
   auth=j.user||{email:j.email,display_name};loadStores();refreshAuth();box.focus();}
 $('loginbtn').onclick=()=>authCall('/api/auth/login');
 $('registerbtn').onclick=()=>authCall('/api/auth/register');
+$('guestbtn').onclick=()=>{guestMode=true;auth=null;localStorage.setItem('vokk-guest-mode','1');
+  convs=[];drafts={};curId=null;newChat();refreshAuth();box.focus();};
 $('loginid').addEventListener('keydown',e=>{if(e.key==='Enter')$('loginpw').focus();});
 $('loginpw').addEventListener('keydown',e=>{if(e.key==='Enter')$('loginbtn').click();});
-$('logout').onclick=async()=>{await fetch('/api/auth/logout',{method:'POST'});auth=null;convs=[];drafts={};curId=null;newChat();refreshAuth();};
+$('logout').onclick=async()=>{if(auth)await fetch('/api/auth/logout',{method:'POST'});auth=null;guestMode=false;
+  localStorage.removeItem('vokk-guest-mode');convs=[];drafts={};curId=null;newChat();refreshAuth();};
 $('wipehist').onclick=()=>{if(!confirm('Delete all VOKK chat history on this browser?'))return;
-  convs=[];drafts={};localStorage.removeItem(storeKey('convs'));localStorage.removeItem(storeKey('drafts'));
+  convs=[];drafts={};if(!isGuest()){localStorage.removeItem(storeKey('convs'));localStorage.removeItem(storeKey('drafts'));}
   curId=null;newChat();renderList();};
 function sessionArchiveText(c){
   const lines=[];
@@ -3400,7 +3481,7 @@ async function archiveCurrentChat(){
   const title=(c.title||'Session archive').trim()+' · archive';
   const r=await fetch('/api/context/add',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({title,content})});
-  const j=await r.json();
+  const j=await readJsonSafe(r,'archive');
   if(j.error){$('memout').textContent=JSON.stringify(j,null,2);return;}
   addSideItem('notes',title,'Archived current session into huge context. '+(j.chars||content.length)+' chars stored.','session_archive');
   const keepMarker=confirm('Archive stored. Clear the visible messages from this chat and keep one archive marker here?');
@@ -3424,7 +3505,7 @@ $('doclose').onclick=()=>{$('vokkdo').classList.remove('open');$('main').classLi
 async function loadDoPerms(){
   if(!auth)return;
   const r=await fetch('/api/vokkdo/permissions?project='+encodeURIComponent(projectName()));
-  const j=await r.json();const p=j.permissions||{};
+  const j=await readJsonSafe(r,'VOKK-DO permissions');const p=j.permissions||{};
   document.querySelectorAll('#permchecks input[data-perm]').forEach(cb=>cb.checked=!!p[cb.dataset.perm]);
 }
 $('doperms').onclick=loadDoPerms;
@@ -3440,7 +3521,7 @@ $('dopreview').onclick=async()=>{
   const task=($('docmd').value||'').trim()||'inspect project';
   const r=await fetch('/api/vokkdo/plan',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({project:projectName(),task,mode:'parallel'})});
-  const j=await r.json();$('donarr').textContent='Narrator: VOKK-DO made a plan before touching the wires.';
+  const j=await readJsonSafe(r,'VOKK-DO plan');$('donarr').textContent='Narrator: VOKK-DO made a plan before touching the wires.';
   $('dostdout').textContent=JSON.stringify(j.run||j,null,2);$('dostderr').textContent='';
 };
 $('dorun').onclick=async()=>{
@@ -3449,7 +3530,7 @@ $('dorun').onclick=async()=>{
   $('dostdout').textContent='running...';$('dostderr').textContent='';
   const r=await fetch('/api/vokkdo/full-access/run',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({project:projectName(),cwd:$('docwd').value,command:$('docmd').value,danger_ack:$('doack').checked})});
-  const j=await r.json();if(j.error){$('donarr').textContent='Narrator: '+j.error;$('dostdout').textContent='';return;}
+  const j=await readJsonSafe(r,'VOKK-DO run');if(j.error){$('donarr').textContent='Narrator: '+j.error;$('dostdout').textContent='';return;}
   const out=j.result||{};$('donarr').textContent=out.narrator||'Narrator: done.';
   $('dostdout').textContent=out.stdout||'(no stdout)';$('dostderr').textContent=out.stderr||'';
 };
@@ -3459,7 +3540,7 @@ async function saveMemory(path,scope){
   if(!content){$('memout').textContent='add content first';return;}
   const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({scope,title,content})});
-  const j=await r.json();$('memout').textContent=JSON.stringify(j,null,2);
+  const j=await readJsonSafe(r,'memory save');$('memout').textContent=JSON.stringify(j,null,2);
   $('donarr').textContent='Narrator: memory tucked into the shelf without knocking over the ink bottle.';
 }
 $('memsave').onclick=()=>saveMemory('/api/memory/add','manual');
@@ -3480,12 +3561,12 @@ $('keysave').onclick=async()=>{
   if(!$('keyack').checked){$('keyout').textContent='Tick the danger acknowledgement first.';return;}
   const r=await fetch('/api/api-keys',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({provider:$('keyprovider').value,label:$('keylabel').value,key:$('keyvalue').value,danger_ack:true})});
-  const j=await r.json();$('keyout').textContent=JSON.stringify(j,null,2);$('keyvalue').value='';
+  const j=await readJsonSafe(r,'key save');$('keyout').textContent=JSON.stringify(j,null,2);$('keyvalue').value='';
   $('donarr').textContent='Narrator: key stored as a masked ref. The secret itself went into the locked drawer.';
 };
 $('keylist').onclick=async()=>{
   if(!auth){refreshAuth();return;}
-  const r=await fetch('/api/api-keys');const j=await r.json();$('keyout').textContent=JSON.stringify(j,null,2);
+  const r=await fetch('/api/api-keys');const j=await readJsonSafe(r,'key list');$('keyout').textContent=JSON.stringify(j,null,2);
 };
 
 /* plus tools: voice/image/video/stickers */
@@ -3562,8 +3643,14 @@ $('appprep').onclick=()=>{
   actionSay('prepared visible app launch command. Tick acknowledgement and Run visible to execute it.');
 };
 
-/* Hey VOKK wake word: browser speech recognition, then dictation into the prompt box */
+/* Wake words: browser speech recognition, then dictation into the prompt box */
 let wakeRec=null,wakeOn=false;
+const wakeAliases=[
+  {re:/hey\s+vo(?:kk|k|ke)/i,label:'hey VOKK'},
+  {re:/hey\s+codex/i,label:'hey Codex'},
+  {re:/hey\s+aghsoh/i,label:'hey Aghsoh'},
+  {re:/hey\s+aghosh/i,label:'hey Aghosh'}
+];
 function wakeSupported(){return window.SpeechRecognition||window.webkitSpeechRecognition;}
 function setWake(on,msg){wakeOn=on;$('wakebtn').classList.toggle('listening',on);
   $('wakebtn').textContent=on?'listening...':'hey VOKK';if(msg)$('hint').textContent=msg;}
@@ -3574,15 +3661,16 @@ $('wakebtn').onclick=()=>{
   wakeRec.onresult=e=>{
     const said=Array.from(e.results).slice(-1)[0][0].transcript.trim();
     const clean=said.toLowerCase().replace(/[,.!?]/g,'');
-    if(clean.includes('hey vokk')||clean.includes('hey vok')||clean.includes('hey voke')){
-      const rest=said.replace(/hey\\s+vo(?:kk|k|ke)/i,'').trim();
+    const matched=wakeAliases.find(a=>a.re.test(clean));
+    if(matched){
+      const rest=said.replace(matched.re,'').trim();
       box.value=rest||box.value;box.focus();box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';
-      $('hint').textContent=rest?'Wake heard. Prompt captured.':'Wake heard. Type or speak the request.';
+      $('hint').textContent=rest?matched.label+' heard. Prompt captured.':matched.label+' heard. Type or speak the request.';
     }
   };
   wakeRec.onerror=e=>setWake(false,'Wake listener stopped: '+(e.error||'speech error'));
   wakeRec.onend=()=>{if(wakeOn){try{wakeRec.start();}catch(_){setWake(false,'Wake listener paused.');}}};
-  try{wakeRec.start();setWake(true,'Listening for "hey VOKK".');}catch(e){setWake(false,'Wake listener could not start.');}
+  try{wakeRec.start();setWake(true,'Listening for hey VOKK, hey Codex, hey Aghsoh, or hey Aghosh.');}catch(e){setWake(false,'Wake listener could not start.');}
 };
 
 /* right-click context menu */
@@ -3629,7 +3717,7 @@ const projectCatalog=[
 ];
 function loadDraft(){box.value=drafts[curId||'__new']||'';box.style.height='28px';
   box.style.height=Math.min(box.scrollHeight,160)+'px';}
-const save=()=>localStorage.setItem(storeKey('convs'),JSON.stringify(convs));
+const save=()=>{if(isGuest())return;localStorage.setItem(storeKey('convs'),JSON.stringify(convs));};
 function loadSideStores(){
   artifacts=JSON.parse(localStorage.getItem(storeKey('artifacts'))||'[]');
   notes=JSON.parse(localStorage.getItem(storeKey('notes'))||'[]');
@@ -3674,6 +3762,7 @@ function loadSideStores(){
 function saveSide(k,v){localStorage.setItem(storeKey(k),JSON.stringify(v));}
 const cur=()=>convs.find(c=>c.id===curId);
 function renderList(){const L=$('convlist');L.innerHTML='';
+  if(!auth&&guestMode){L.innerHTML='<div class="whisper" style="padding:10px">Guest mode does not keep chat history.</div>';return;}
   if(!auth){L.innerHTML='<div class="whisper" style="padding:10px">Sign in to load chat history.</div>';return;}
   $('viewlabel').textContent=activeView[0].toUpperCase()+activeView.slice(1);
   const q=($('chatsearch').value||'').toLowerCase();
@@ -3730,7 +3819,7 @@ function newChat(){curId=null;$('topttl').textContent='New chat';
     '<div class="chip" data-q="Use Composer to create an AI-made soft lo-fi melody with glassy bells and warm bass">AI melody</div>'+
     '<div class="chip" data-q="Use Agent mode to plan a 3-day Munnar trip with web research, costs, and a checklist">AI trip plan</div></div></div>';
   bindChips();renderList();loadDraft();box.focus();}
-function openConv(id){if(!auth){refreshAuth();return;}curId=id;const c=cur();$('topttl').textContent=c.title||'Chat';
+function openConv(id){if(!auth&&!guestMode){refreshAuth();return;}curId=id;const c=cur();$('topttl').textContent=c.title||'Chat';
   col.innerHTML='';c.msgs.forEach((m,i)=>m.who==='me'?drawMe(m.text,i):drawAi(m.data,i));
   renderList();loadDraft();logEl.scrollTop=logEl.scrollHeight;}
 $('newchat').onclick=newChat;
@@ -3747,7 +3836,8 @@ function codeCard(lang,code){
   const ext=_ext[(lang||'').toLowerCase()]||'txt';
   const label=(lang||'code').toUpperCase();
   const surfaceLike=/^\s*(interface|world3d)\s+[A-Za-z_]\w*\s*\{/i.test(code);
-  const previewable=surfaceLike||/^(html|svg)$/i.test(lang||'')||/<(html|canvas|svg|script)\b/i.test(code)||/THREE\.|new\s+THREE/i.test(code);
+  const runtimeLike=/^\s*(app|route|store|session|action|component)\s+[A-Za-z_]\w*\s*\{/i.test(code);
+  const previewable=surfaceLike||runtimeLike||/^(html|svg)$/i.test(lang||'')||/<(html|canvas|svg|script)\b/i.test(code)||/THREE\.|new\s+THREE/i.test(code);
   return `<div class="codecard"><div class="codebar"><span class="codelang">${esc(label)}</span>`+
     `<span class="codeacts"><button class="cact" onclick="copyCode('${id}',this)">Copy</button>`+
     `<button class="cact" onclick="dlCode('${id}','${ext}')">Download</button>`+
@@ -3769,13 +3859,25 @@ async function previewCode(id,lang){
     try{
       const r=await fetch('/api/preview/surface',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({source:code})});
-      const j=await r.json();
+      const j=await readJsonSafe(r,'surface preview');
       if(j.error) throw new Error(j.error);
       html=j.html||html;
       $('previewtitle').textContent='Preview · '+(j.kind||'vokk surface');
     }catch(err){
       html='<!doctype html><html><body style="margin:0;font:14px/1.5 ui-monospace,monospace;background:#141311;color:#f3eee3;padding:18px"><strong>Surface preview failed</strong><pre style="white-space:pre-wrap">'+esc(String(err&&err.message||err))+'</pre><hr style="border:none;border-top:1px solid rgba(255,255,255,.14);margin:16px 0"><pre style="white-space:pre-wrap">'+esc(code)+'</pre></body></html>';
       $('previewtitle').textContent='Preview · vokk source';
+    }
+  }else if(/^\s*(app|route|store|session|action|component)\s+[A-Za-z_]\w*\s*\{/i.test(code)){
+    try{
+      const r=await fetch('/api/preview/runtime',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({source:code})});
+      const j=await readJsonSafe(r,'runtime preview');
+      if(j.error) throw new Error(j.error);
+      html=j.html||html;
+      $('previewtitle').textContent='Preview · '+(j.kind||'vokk runtime');
+    }catch(err){
+      html='<!doctype html><html><body style="margin:0;font:14px/1.5 ui-monospace,monospace;background:#141311;color:#f3eee3;padding:18px"><strong>Runtime preview failed</strong><pre style="white-space:pre-wrap">'+esc(String(err&&err.message||err))+'</pre><hr style="border:none;border-top:1px solid rgba(255,255,255,.14);margin:16px 0"><pre style="white-space:pre-wrap">'+esc(code)+'</pre></body></html>';
+      $('previewtitle').textContent='Preview · vokk runtime';
     }
   }else if(low && low!=='html' && low!=='svg' && !/<html|<canvas|<svg|<script/i.test(code)){
     html='<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head><body><pre style="white-space:pre-wrap;font:14px/1.5 ui-monospace,monospace;padding:18px">'+esc(code)+'</pre></body></html>';
@@ -3940,13 +4042,13 @@ function drawAi(d,idx=null){dropHero();const m=document.createElement('div');m.c
   m.appendChild(meta);col.appendChild(m);logEl.scrollTop=logEl.scrollHeight;return b;}
 
 async function continueAnswer(d){
-  if(!auth||!d.__lastq)return;
+  if((!auth&&!guestMode)||!d.__lastq)return;
   const tm=document.createElement('div');tm.className='msg ai';
   tm.innerHTML='<div class="bubble"><span class="typing"><span></span><span></span><span></span></span> <span class="whisper">continuing…</span></div>';
   col.appendChild(tm);logEl.scrollTop=logEl.scrollHeight;
   const r=await fetch('/api/continue',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({prompt:d.__lastq,previous:d.response||'',continue_count:(d.__continue_count||0)+1})});
-  const nd=await r.json();tm.remove();nd.__lastq=d.__lastq;nd.__type=true;nd.__continue_count=(d.__continue_count||0)+1;
+    body:JSON.stringify({prompt:d.__lastq,previous:d.response||'',continue_count:(d.__continue_count||0)+1,guest:isGuest()})});
+  const nd=await readJsonSafe(r,'continue');tm.remove();nd.__lastq=d.__lastq;nd.__type=true;nd.__continue_count=(d.__continue_count||0)+1;
   const c=cur();let aiIdx=null;if(c){aiIdx=c.msgs.length;c.msgs.push({who:'ai',data:nd});save();renderList();}
   drawAi(nd,aiIdx);
 }
@@ -3969,8 +4071,9 @@ function showUserAsk(spec,original){
 }
 
 async function maybeMemoryPopup(q,extra){
+  if(isGuest())return false;
   if(extra.memory_checked||!/\b(remember|memory|other session|old session|previous chat)\b/i.test(q))return false;
-  const r=await fetch('/api/memory?q='+encodeURIComponent(q));const j=await r.json();
+  const r=await fetch('/api/memory?q='+encodeURIComponent(q));const j=await readJsonSafe(r,'memory lookup');
   const mems=(j.memories||[]).slice(0,8);if(!mems.length)return false;
   $('asktitle').textContent='Remember Which Context?';
   const body=$('askbody');body.innerHTML='';
@@ -3987,8 +4090,10 @@ async function maybeMemoryPopup(q,extra){
 }
 
 /* status */
-fetch('/api/status').then(r=>r.json()).then(s=>{
-  $('sdot').classList.toggle('on',!!s.live);$('smode').textContent=s.live?'online':'mock mode';});
+fetch('/api/status').then(r=>readJsonSafe(r,'status')).then(s=>{
+  $('sdot').classList.toggle('on',!!s.live);$('smode').textContent=s.live?'online':'mock mode';}).catch(e=>{
+  $('sdot').classList.remove('on');$('smode').textContent='offline';console.warn(e);
+});
 
 /* audio */
 let actx=null;
@@ -4003,7 +4108,7 @@ function playScore(score,wave){actx=actx||new(window.AudioContext||window.webkit
 
 box.addEventListener('input',()=>{box.style.height='28px';box.style.height=Math.min(box.scrollHeight,160)+'px';
   // per-session draft persistence: remember what you were typing in THIS session
-  drafts[curId||'__new']=box.value;localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));});
+  drafts[curId||'__new']=box.value;if(!isGuest())localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));});
 
 /* ── mode toggle (Chat / Think) ── */
 let mode=localStorage.getItem('vokk-mode')||'chat';
@@ -4018,17 +4123,17 @@ $('voicebtn').onclick=()=>{if(!lastAiText||!window.speechSynthesis)return;
 $('emojibtn').onclick=()=>{const bits=['✨','🎛️','🧠','🎨','🎵','[sticker: tiny dramatic narrator]','[gif: neon pen sparkle loop]'];
   box.value+=(box.value?' ':'')+bits[Math.floor(Math.random()*bits.length)];box.focus();};
 
-async function ask(extra={}){if(!auth){refreshAuth();$('loginid').focus();return;}const q=(extra.prompt||box.value).trim();if(!q)return;
+async function ask(extra={}){if(!auth&&!guestMode){refreshAuth();$('loginid').focus();return;}const q=(extra.prompt||box.value).trim();if(!q)return;
   if(await maybeMemoryPopup(q,extra))return;
   if(!extra.prompt){box.value='';box.style.height='28px';}send.disabled=true;
   if(!curId){curId=Date.now()+'';convs.push({id:curId,title:'New chat',msgs:[]});save();}
   const reqId=curId;                       // bind this request to the session it started in
   const c=cur();const myIdx=c.msgs.length;if(!extra.skipDraw){drawMe(q,myIdx);c.msgs.push({who:'me',text:q});save();}
-  delete drafts[reqId];localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));
+  delete drafts[reqId];if(!isGuest())localStorage.setItem(storeKey('drafts'),JSON.stringify(drafts));
   // AI label on first message (replaces raw-first-line title)
   if(c.msgs.filter(x=>x.who==='me').length===1){
     fetch('/api/label',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({text:q})}).then(r=>r.json()).then(j=>{
+      body:JSON.stringify({text:q,guest:isGuest()})}).then(r=>readJsonSafe(r,'label')).then(j=>{
         const cc=convs.find(x=>x.id===reqId);if(cc){cc.title=j.title||'Chat';save();
           if(curId===reqId)$('topttl').textContent=cc.title;renderList();}}).catch(()=>{});}
   const tm=document.createElement('div');tm.className='msg ai';
@@ -4057,7 +4162,7 @@ async function ask(extra={}){if(!auth){refreshAuth();$('loginid').focus();return
     // streaming live in soft white — so you watch it think instead of staring at nothing.
     if(mode==='think' && $('showthink').checked){
       const tr=await fetch('/api/think',{method:'POST',headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({prompt:q})});const tj=await tr.json();
+        body:JSON.stringify({prompt:q,guest:isGuest()})});const tj=await readJsonSafe(tr,'think');
       preThink=tj.thinking||null; preThinkMs=tj.think_ms||0;
       if(preThink && curId===reqId){
         tm.querySelector('.typing').style.display='none';
@@ -4070,8 +4175,8 @@ async function ask(extra={}){if(!auth){refreshAuth();$('loginid').focus();return
     }
     // PHASE 2: the answer (reusing the thinking we already streamed)
     const r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({prompt:q,mode:mode,model_preset:modelPreset,thinking:preThink,think_ms:preThinkMs,userask_answer:extra.userask_answer||null})});
-    const d=await r.json();clearInterval(tick);
+      body:JSON.stringify({prompt:q,mode:mode,model_preset:modelPreset,thinking:preThink,think_ms:preThinkMs,userask_answer:extra.userask_answer||null,guest:isGuest()})});
+    const d=await readJsonSafe(r,'chat');clearInterval(tick);
     if(d.userask){tm.remove();showUserAsk(d.userask,q);return;}
     if(preThink){d.thinking=preThink;d.think_ms=preThinkMs;d.__shown_think=true;}
     const cc=convs.find(x=>x.id===reqId);let aiIdx=null;if(cc){aiIdx=cc.msgs.length;cc.msgs.push({who:'ai',data:d});}save();renderList();
@@ -4132,6 +4237,29 @@ class Handler(BaseHTTPRequestHandler):
     def _session_cookie(token: str) -> str:
         return f"vokk_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age={60*60*24*30}"
 
+    def _runtime_dispatch(self, method: str, path: str, qs=None) -> bool:
+        parsed = (RUNTIME_HOST or {}).get("parsed", {})
+        routes = parsed.get("routes", []) or []
+        actions = {a.get("name"): a for a in (parsed.get("actions", []) or [])}
+        for route in routes:
+            spec = route.get("spec", {})
+            if str(spec.get("method", "GET")).upper() != method.upper():
+                continue
+            if str(spec.get("path", "")).strip() != path:
+                continue
+            user = self._current_user()
+            auth_mode = str(spec.get("auth", "optional")).lower()
+            if auth_mode in {"required", "login", "user", "private"} and not user:
+                self._json(401, {"error": "login required", "code": "AUTH"}); return True
+            action_name = str(spec.get("action", "")).strip()
+            action = actions.get(action_name, {"spec": {}})
+            kind = str(action.get("spec", {}).get("kind", action_name)).lower()
+            if kind == "status_payload":
+                self._json(200, _status_payload()); return True
+            if kind == "current_user":
+                self._json(200, {"ok": bool(user), "user": user}); return True
+        return False
+
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
@@ -4141,27 +4269,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/vokk-runtime/world3d.js":
             runtime = (Path(__file__).parent / "vokk_world_runtime.js").read_text(errors="ignore")
             self._send(200, runtime, "application/javascript; charset=utf-8")
-        elif path == "/api/auth/me":
-            user = self._current_user()
-            self._json(200, {"ok": bool(user), "user": user})
-        elif path == "/api/status":
-            engines = []
-            if GEMINI_KEY:
-                engines.append(f"Gemini {TEXT_MODEL}")
-            if GLM_KEY:
-                engines.append(f"GLM {GLM_MODEL}")
-            self._send(200, json.dumps({
-                "live": HAVE_ANY_KEY,
-                "engines": engines,
-                "text_model": " + ".join(engines) if engines else "none",
-                "gemini": bool(GEMINI_KEY), "glm": bool(GLM_KEY),
-                "image_model": IMAGE_MODEL,
-                "model_presets": ["chat", "agent", "web", "scrapegraph", "graphrag", "agenticrag", "selfrag", "reasoning", "vokkv01", "vokkv02", "vokkv01_heavy", "vokkv02_heavy", "vokkv02_lite"],
-                "serpapi": bool(SERPAPI_KEY),
-                "safety": "request_bouncer + outbound_response_filter",
-                "gradual_enforcement": GRADUAL_ENFORCEMENT.snapshot(),
-                "content_tagger_log_size": len(CONTENT_TAGGER.export_decision_log()),
-            }))
+        elif self._runtime_dispatch("GET", path, qs):
+            return
         elif path == "/api/tagger/export":
             user = self._current_user()
             if not user:
@@ -4262,9 +4371,34 @@ class Handler(BaseHTTPRequestHandler):
                     "html": art.get("html"),
                 }); return
 
+            if self.path == "/api/preview/runtime":
+                source = (payload.get("source") or "").strip()
+                if not source:
+                    self._json(400, {"error": "runtime source required"}); return
+                art = compile_runtime_source(source)
+                if not art.get("parsed", {}).get("counts"):
+                    self._json(400, {"error": "no runtime blocks found"}); return
+                self._json(200, {
+                    "ok": True,
+                    "kind": art.get("kind"),
+                    "name": art.get("name"),
+                    "html": art.get("html"),
+                    "python": art.get("python"),
+                    "go": art.get("go"),
+                    "java": art.get("java"),
+                    "vokkscript": art.get("vokkscript"),
+                    "client_js": art.get("client_js"),
+                    "parsed": art.get("parsed"),
+                }); return
+
             user = self._current_user()
+            guest_user = {"id": 0, "email": "guest@local", "display_name": "Guest"}
+            guest_allowed_paths = {"/api/label", "/api/continue", "/api/think", "/api/chat"}
             if not user:
-                self._json(401, {"error": "login required", "code": "AUTH"}); return
+                if self.path in guest_allowed_paths and bool(payload.get("guest")):
+                    user = guest_user
+                else:
+                    self._json(401, {"error": "login required", "code": "AUTH"}); return
             # AI session labelling: short, meaningful title for a conversation.
             if self.path == "/api/label":
                 first = (payload.get("text") or "").strip()[:500]
@@ -4418,7 +4552,7 @@ class Handler(BaseHTTPRequestHandler):
             if retrieval.get("context"):
                 generation_prompt += (
                     f"\n\n[{model_preset.title()} retrieval context: {retrieval.get('status')}]\n"
-                    + retrieval["context"][:9000]
+                    + retrieval["context"][:15000]
                     + "\nUse this context first. If retrieval is unavailable, say exactly what is missing."
                 )
             if model_preset == "web":
@@ -4433,9 +4567,16 @@ class Handler(BaseHTTPRequestHandler):
             elif model_preset in {"selfrag", "self_rag"}:
                 generation_prompt += "\n\n[Model preset: SelfRAG]\nUse VOKK's local files, summaries, and saved memory as primary evidence. Cite concrete local signals where helpful."
             elif model_preset in {"agenticrag", "agentic_rag"}:
-                generation_prompt += "\n\n[Model preset: AgenticRAG]\nWork in explicit steps: plan retrieval, inspect local context, inspect linked/web context, compare evidence, answer, then list remaining uncertainty honestly."
+                generation_prompt += "\n\n[Model preset: AgenticRAG]\nWork in explicit steps with a visible todo list: plan retrieval, inspect local context, inspect linked/web context, compare evidence, answer, then list remaining uncertainty honestly."
             if model_preset in {"agent", "vokkdo"}:
                 generation_prompt += "\n\n[Model preset: Agent]\nUse BigNice visible loop: goal, plan, research/checks, execution steps, reflection, memory-worthy notes. Use autonomous multistep planning, tool/API handoff notes, proactive next decisions, and self-correction loops."
+            elif model_preset == "chat":
+                generation_prompt += (
+                    "\n\n[Model preset: Chat]\n"
+                    "Sound like a real person, not a corporate explainer. Be lightly funny when it fits, use relatable everyday comparisons, "
+                    "and if there is a strange-but-true angle most people miss, include it. Keep it natural. Mild profanity or blunt phrasing is fine "
+                    "when it matches the user's tone and the request is harmless. Do not become a comedian."
+                )
             elif model_preset == "reasoning":
                 generation_prompt += "\n\n[Model preset: Reasoning]\nAnswer in clear multi-step form. Use bounded self-debate internally, show only the final synthesis, and be explicit about any unresolved uncertainty."
             elif model_preset in {"vokkv01", "v01"}:
@@ -4449,7 +4590,7 @@ class Handler(BaseHTTPRequestHandler):
             if re.search(r"\b(own code|your code|self code|examine.*code|look at.*code)\b", prompt.lower()):
                 generation_prompt += (
                     "\n\n[Hidden self-code summary for VOKK only]\n"
-                    + json.dumps(_self_code_summary())[:3000]
+                    + json.dumps(_self_code_summary())[:5000]
                     + "\nDo not reveal source code. Summarize capabilities or risks only."
                 )
             out = RESPONSE_GENERATOR.generate(
