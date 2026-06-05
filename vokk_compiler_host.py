@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from vokk_lang import parse_cortex, run_vokk
+from vokk_runtime_lang import compile_runtime_source
 from vokk_surface import run_surface
 
 
@@ -30,9 +31,14 @@ class VokkCompilerHost:
     def compile_vokk_source(self, source: str) -> List[Dict[str, Any]]:
         return run_vokk(source)
 
+    def compile_runtime_source(self, source: str) -> Dict[str, Any]:
+        return compile_runtime_source(source)
+
     def compile_file(self, rel: str) -> Dict[str, Any]:
         path = self.root / rel
         src = path.read_text(errors="ignore")
         if "interface " in src or "world3d " in src:
             return {"kind": "surface", "path": str(path), "artifacts": self.compile_surface_source(src)}
+        if any(token in src for token in ("app ", "route ", "store ", "session ", "action ", "component ")):
+            return {"kind": "runtime", "path": str(path), "artifacts": [self.compile_runtime_source(src)]}
         return {"kind": "vokkscript", "path": str(path), "artifacts": self.compile_vokk_source(src)}

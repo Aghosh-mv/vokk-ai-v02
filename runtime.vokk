@@ -1,0 +1,46 @@
+# runtime.vokk — early VOKK backend/runtime ownership
+
+app VokkHost {
+  title "VOKK Runtime Host"
+  mount /
+}
+
+store AuthDB {
+  engine sqlite
+  file ~/.vokk/vokkv02_auth.db
+}
+
+session UserSession {
+  cookie vokk_session
+  ttl 2592000
+  store AuthDB
+}
+
+action StatusPayload {
+  kind status_payload
+}
+
+action CurrentUser {
+  kind current_user
+  session UserSession
+}
+
+route Status {
+  method GET
+  path /api/status
+  auth public
+  action StatusPayload
+}
+
+route AuthMe {
+  method GET
+  path /api/auth/me
+  auth optional
+  session UserSession
+  action CurrentUser
+}
+
+component ChatShell {
+  surface interface VOKKChat
+  events send_message open_history open_settings
+}
