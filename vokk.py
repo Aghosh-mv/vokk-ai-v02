@@ -43,6 +43,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # VokkScript builds VOKK's mind (cortex.vokk).
 from vokk_lang import run_vokk, extract_blocks, parse_cortex
+from vokk_logic import run_logic  # executable VokkScript (expressions / control flow)
 # VokkImageMusicScript — VOKK's dedicated language for images & music (soft, painterly).
 from vokk_imagemusic import run_imagemusic
 # The procedural raster engine — VokkScript `scene {}` -> real atmospheric PNG pixels.
@@ -1850,10 +1851,58 @@ class CortexRouter:
                 self.routes[task] = bt
         self.cortex_loaded = True
 
+    # ── Fast router, WRITTEN IN VOKKSCRIPT and executed by vokk_logic ──────────
+    # This is real VokkScript (not Python): it runs first and resolves the obvious,
+    # high-confidence cases deterministically — "actual tuning" instead of paying a
+    # round-trip to the LLM classifier and hoping it returns the right JSON. Only
+    # ambiguous prompts ("unknown") fall through to the model classifier below.
+    # vokkscript:begin
+    FAST_ROUTER_VOKK = '''
+    let m = lower(prompt)
+    let cls = "unknown"
+    if contains(m, "draw") or contains(m, "portrait") or contains(m, "logo") or contains(m, "illustration") {
+        set cls = "image"
+    }
+    if contains(m, "photo of") or contains(m, "photorealistic") or contains(m, "landscape") or contains(m, "sunset") {
+        set cls = "scene"
+    }
+    if contains(m, "melody") or contains(m, "jingle") or contains(m, "compose") or contains(m, "a tune") {
+        set cls = "music"
+    }
+    if contains(m, "scaffold") or contains(m, "build me") or contains(m, "set up a project") or contains(m, "make an app") {
+        set cls = "agency"
+    }
+    if (contains(m, "fix") or contains(m, "debug")) and (contains(m, "error") or contains(m, "bug")) {
+        set cls = "debug"
+    }
+    return cls
+    '''
+    # vokkscript:end
+
+    def _fast_route_class(self, prompt):
+        """Run the VokkScript fast router. Returns a TaskClass or None (defer to LLM)."""
+        try:
+            res = run_logic(self.FAST_ROUTER_VOKK, {"prompt": prompt})
+            return _TASK_CLASS.get(str(res.value))
+        except Exception:
+            return None
+
     def _features(self, prompt):
-        """Model-classified features. Falls back to a neutral default (Core) only
-        when no model is reachable — never to keyword matching."""
+        """Features: VokkScript fast router first (deterministic, no LLM round-trip),
+        then the model classifier for anything it leaves as 'unknown'. Falls back to a
+        neutral default (Core) only when no model is reachable."""
         f = TaskFeatures()
+        # VokkScript-defined fast path: resolves obvious creative/agency/debug prompts.
+        fast = self._fast_route_class(prompt)
+        if fast is not None:
+            f.task_class = fast
+            f.creativity_required = fast in (TaskClass.IMAGE, TaskClass.MUSIC, TaskClass.SCENE, TaskClass.CHROMA)
+            f.agency_required = fast == TaskClass.AGENCY
+            f.image_required = f.task_class == TaskClass.IMAGE
+            f.music_required = f.task_class == TaskClass.MUSIC
+            f.scene_required = f.task_class == TaskClass.SCENE
+            f.chroma_required = f.task_class == TaskClass.CHROMA
+            return f
         if not HAVE_ANY_KEY:
             return f  # neutral; offline mock mode routes to Core by default
         try:
